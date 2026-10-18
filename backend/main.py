@@ -1431,6 +1431,18 @@ def migrate_payment_schema():
 
 async def create_indexes():
     try:
+        # Create the required vendor invitation uniqueness index
+        # independently so a failure in another collection's indexes
+        # cannot prevent vendor IDs from being protected against duplicates.
+        try:
+            vendor_invitations_collection.create_index(
+                "vendor_id",
+                unique=True,
+            )
+            vendor_invitations_collection.create_index("email")
+        except Exception as e:
+            logger.warning("Vendor invitation index warning: %s", e)
+
         # ============================================================
         # USERS
         # ============================================================
@@ -1444,12 +1456,6 @@ async def create_indexes():
             "phone",
             unique=True
         )
-        vendor_invitations_collection.create_index(
-            "vendor_id",
-            unique=True,
-        )
-        vendor_invitations_collection.create_index("email")
-
         logger.info(
             "✅ Users collection indexes created"
         )

@@ -127,6 +127,10 @@ export default function VendorActivatePage() {
 
   // ============================================================
   // STEP 2 - choose a password and activate
+  //
+  // The invited email is server-returned and not editable. The
+  // activation code remains in component state only and is cleared
+  // after success; it is never copied to browser storage or a URL.
   // ============================================================
 
   async function handleActivate(event: FormEvent) {

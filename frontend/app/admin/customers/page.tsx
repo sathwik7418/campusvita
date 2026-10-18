@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 import {
   Search,
   Users,
@@ -224,7 +224,9 @@ export default function CustomerManagementPage() {
   }
 
   useEffect(() => {
-    loadCustomers();
+    startTransition(() => {
+      void loadCustomers();
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, search, status, sort]);
 

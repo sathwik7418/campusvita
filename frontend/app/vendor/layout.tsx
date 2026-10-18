@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import {
   getSession,
@@ -42,8 +42,10 @@ export default function VendorLayout({
       return;
     }
 
-    setAuthorized(true);
-    setCheckingAuth(false);
+    startTransition(() => {
+      setAuthorized(true);
+      setCheckingAuth(false);
+    });
   }, [router, isPublicRoute]);
 
   if (isPublicRoute) {

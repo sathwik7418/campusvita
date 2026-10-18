@@ -38,6 +38,24 @@ const API_URL =
   process.env.NEXT_PUBLIC_API_URL ||
   "http://127.0.0.1:8000";
 
+type AuthApiResponse = {
+  message?: string;
+  detail?: string;
+  access_token?: string;
+  refresh_token?: string;
+  token_type?: string;
+  expires_in?: number;
+  user?: {
+    name?: string;
+    email?: string;
+    role?: string;
+    phone?: string;
+    department?: string;
+    year?: string;
+    profile_image?: string;
+  };
+};
+
 export default function LoginPage() {
   const router = useRouter();
 
@@ -111,10 +129,10 @@ export default function LoginPage() {
         }
       );
 
-      let data: any;
+      let data: AuthApiResponse;
 
       try {
-        data = await response.json();
+        data = (await response.json()) as AuthApiResponse;
       } catch (error) {
         console.error(
           "Login response JSON error:",
@@ -379,14 +397,15 @@ export default function LoginPage() {
 
           body: JSON.stringify({
             id_token: idToken,
+            login_mode: loginMode,
           }),
         }
       );
 
-      let data: any;
+      let data: AuthApiResponse;
 
       try {
-        data = await response.json();
+        data = (await response.json()) as AuthApiResponse;
       } catch (error) {
         console.error(
           "Google login response JSON error:",
@@ -595,19 +614,24 @@ export default function LoginPage() {
         router.replace("/");
       }
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(
         "Google login error:",
         error
       );
+
+      const errorCode =
+        typeof error === "object" && error !== null && "code" in error &&
+        typeof error.code === "string"
+          ? error.code
+          : undefined;
 
       // ========================================================
       // USER CLOSED POPUP
       // ========================================================
 
       if (
-        error?.code ===
-        "auth/popup-closed-by-user"
+        errorCode === "auth/popup-closed-by-user"
       ) {
         toast.error(
           "Google login was cancelled"
@@ -621,8 +645,7 @@ export default function LoginPage() {
       // ========================================================
 
       if (
-        error?.code ===
-        "auth/popup-blocked"
+        errorCode === "auth/popup-blocked"
       ) {
         toast.error(
           "Google popup was blocked by your browser"
