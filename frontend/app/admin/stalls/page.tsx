@@ -28,7 +28,6 @@ type Stall = {
 type StallForm = {
   name: string;
   image: string;
-  imageSource: string;
   description: string;
   is_open: boolean;
   active: boolean;
@@ -47,7 +46,6 @@ const API_URL =
 const emptyForm: StallForm = {
   name: "",
   image: "",
-  imageSource: "url",
   description: "",
   is_open: true,
   active: true,
@@ -64,6 +62,7 @@ export default function StallsPage() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
 
   const [showModal, setShowModal] = useState(false);
   const [editingStall, setEditingStall] = useState<Stall | null>(null);
@@ -90,6 +89,64 @@ export default function StallsPage() {
       Accept: "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
+  };
+
+  const uploadStallImage = async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please select a valid image file.");
+      return;
+    }
+
+    try {
+      setUploadingImage(true);
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const token = getToken();
+      const headers: Record<string, string> = {
+        Accept: "application/json",
+      };
+
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+
+      const response = await fetch(`${API_URL}/upload-image`, {
+        method: "POST",
+        headers,
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail || "Failed to upload stall image."
+        );
+      }
+
+      if (!data?.image_url) {
+        throw new Error("The server did not return an image URL.");
+      }
+
+      setForm((current) => ({
+        ...current,
+        image: data.image_url,
+      }));
+
+      toast.success("Stall image uploaded successfully.");
+    } catch (error) {
+      console.error("Stall image upload error:", error);
+
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to upload stall image."
+      );
+    } finally {
+      setUploadingImage(false);
+    }
   };
 
   const loadStalls = async () => {
@@ -188,7 +245,6 @@ export default function StallsPage() {
     setForm({
       name: stall.name || "",
       image: stall.image || "",
-      imageSource: (stall.image || "").startsWith("http") ? "url" : "local",
       description: stall.description || "",
       is_open: stall.is_open,
       active: stall.active,
@@ -746,55 +802,62 @@ export default function StallsPage() {
   </p>
 </div>
 
-              {/* Image Source */}
-              <div>
-                <label className="mb-2 block text-sm font-medium text-zinc-300">Image Source</label>
-                <div className="flex gap-3">
-                  {[
-                    { key: "url", label: "Image URL" },
-                    { key: "local", label: "Local image path" },
-                  ].map((opt) => (
-                    <button
-                      key={opt.key}
-                      type="button"
-                      onClick={() => setForm({ ...form, imageSource: opt.key })}
-                      className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-                        form.imageSource === opt.key ? "bg-brand text-white" : "bg-zinc-900 text-zinc-400 hover:text-white"
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-                <p className="mt-2 text-xs text-zinc-500">
-                  {form.imageSource === "local"
-                    ? "Place images in frontend/public/images/tiles/ and enter the public path (e.g., /images/tiles/biryani.jpg)"
-                    : "Paste a direct image URL (e.g., https://example.com/photo.jpg)"}
-                </p>
-              </div>
-
-              {/* Image Input */}
+              {/* Stall Image Upload */}
               <div>
                 <label className="mb-2 block text-sm font-medium text-zinc-300">
-                  {form.imageSource === "local" ? "Local Image Path" : "Image URL"}
+                  Stall Image
                 </label>
-                <input
-                  value={form.image}
-                  onChange={(e) => setForm({ ...form, image: e.target.value })}
-                  placeholder={form.imageSource === "local" ? (form.name ? `/images/tiles/${form.name.toLowerCase().replace(/\s+/g, '-')}.jpg` : "/images/tiles/name.jpg") : "https://..."}
-                  className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-white outline-none placeholder:text-zinc-600 focus:border-brand"
-                />
-                <p className="mt-2 text-xs text-emerald-400 font-medium">
-                  {form.imageSource === "local" && form.name
-                    ? `Image file should be named: ${form.name.toLowerCase().replace(/\s+/g, '-')}.jpg and saved in frontend/public/images/tiles/`
-                    : form.imageSource === "local" ? "Name your image file to match the stall name (e.g., biryani.jpg)"
-                    : ""}
-                </p>
-                {form.image && (
-                  <div className="mt-2">
-                    <img src={form.image.startsWith("http") ? form.image : (form.image.startsWith("/") ? form.image : `/${form.image}`)} alt="Preview" className="h-24 rounded-lg object-cover border border-zinc-700" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                  </div>
-                )}
+
+                <div className="rounded-2xl border border-dashed border-zinc-700 bg-zinc-900/60 p-4">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    disabled={uploadingImage}
+                    onChange={(e) => {
+                      const file = e.currentTarget.files?.[0];
+
+                      if (file) {
+                        void uploadStallImage(file);
+                      }
+
+                      e.currentTarget.value = "";
+                    }}
+                    className="block w-full cursor-pointer text-sm text-zinc-400 file:mr-4 file:cursor-pointer file:rounded-xl file:border-0 file:bg-brand file:px-4 file:py-2.5 file:font-semibold file:text-white hover:file:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+
+                  <p className="mt-3 text-xs text-zinc-500">
+                    Choose an image from your computer. The image will be uploaded securely before you save the stall.
+                  </p>
+
+                  {uploadingImage && (
+                    <p className="mt-3 text-sm font-medium text-brand">
+                      Uploading image...
+                    </p>
+                  )}
+
+                  {form.image && (
+                    <div className="mt-4">
+                      <p className="mb-2 text-xs font-medium text-zinc-400">
+                        Image Preview
+                      </p>
+
+                      <img
+                        key={form.image}
+                        src={getImageUrl(form.image)}
+                        alt="Stall image preview"
+                        className="h-40 w-full rounded-xl border border-zinc-700 object-cover"
+                        onError={(e) => {
+                          e.currentTarget.style.display = "none";
+                          toast.error("The image preview could not be loaded.");
+                        }}
+                      />
+
+                      <p className="mt-2 break-all text-xs text-zinc-500">
+                        Image uploaded and ready to save.
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Description */}
@@ -883,10 +946,12 @@ export default function StallsPage() {
               <button
                 type="button"
                 onClick={saveStall}
-                disabled={saving}
+                disabled={saving || uploadingImage}
                 className="rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {saving
+                {uploadingImage
+                  ? "Uploading Image..."
+                  : saving
                   ? "Saving..."
                   : editingStall
                     ? "Update Stall"

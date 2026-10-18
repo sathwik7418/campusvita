@@ -77,6 +77,7 @@ export default function OrdersPage() {
   const [expandedOrder, setExpandedOrder] =
     useState<number | null>(null);
 
+  // Rating modal state
   const [showRatingModal, setShowRatingModal] =
     useState(false);
 
@@ -85,8 +86,11 @@ export default function OrdersPage() {
 
   const [feedback, setFeedback] = useState("");
 
-  const [selectedFoodName, setSelectedFoodName] =
+  const [selectedStallId, setSelectedStallId] =
     useState("");
+
+  const [isSubmittingRating, setIsSubmittingRating] =
+    useState(false);
 
   const { addToCart } = useCart();
 
@@ -116,22 +120,18 @@ export default function OrdersPage() {
         const token = getToken();
 
         if (!token) {
-          toast.error("Please login again");
           setOrders([]);
           return;
         }
 
-        const response = await fetch(
-          `${API_URL}/orders`,
-          {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json",
-            },
-            cache: "no-store",
-          }
-        );
+        const response = await fetch(`${API_URL}/orders`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          cache: "no-store",
+        });
 
         if (response.status === 401) {
           toast.error(
@@ -153,15 +153,13 @@ export default function OrdersPage() {
               errorData.message ||
               errorMessage;
           } catch {
-            // Ignore invalid JSON
+            // Ignore invalid JSON responses.
           }
 
           throw new Error(errorMessage);
         }
 
         const data = await response.json();
-
-        console.log("✅ Orders API response:", data);
 
         if (Array.isArray(data.orders)) {
           const normalizedOrders = [...data.orders]
@@ -171,21 +169,18 @@ export default function OrdersPage() {
           setOrders(normalizedOrders);
 
           console.log(
-            `✅ Loaded ${normalizedOrders.length} orders`
+            `Loaded ${normalizedOrders.length} orders`
           );
         } else {
           console.warn(
-            "⚠️ API returned no orders array:",
+            "Orders API returned no orders array:",
             data
           );
 
           setOrders([]);
         }
       } catch (error) {
-        console.error(
-          "❌ Fetch orders error:",
-          error
-        );
+        console.error("Fetch orders error:", error);
 
         toast.error(
           error instanceof Error
@@ -207,7 +202,7 @@ export default function OrdersPage() {
   // ============================================================
 
   useEffect(() => {
-    fetchOrders();
+    void fetchOrders();
   }, [fetchOrders]);
 
   // ============================================================
@@ -231,29 +226,21 @@ useEffect(() => {
 
 
     socket.on("connect", () => {
-      console.log("✅ Orders socket connected");
+      console.log("Orders socket connected");
     });
 
     socket.on("order_update", (updatedOrder) => {
-      console.log(
-        "🔄 Order update received:",
-        updatedOrder
-      );
+      console.log("Order update received:", updatedOrder);
 
-      fetchOrders();
+      void fetchOrders();
     });
 
     socket.on("disconnect", () => {
-      console.log(
-        "🔌 Orders socket disconnected"
-      );
+      console.log("Orders socket disconnected");
     });
 
     socket.on("connect_error", (error) => {
-      console.warn(
-        "⚠️ Orders socket error:",
-        error
-      );
+      console.warn("Orders socket error:", error);
     });
 
     return () => {
@@ -266,17 +253,10 @@ useEffect(() => {
   // ============================================================
 
   useEffect(() => {
-    const hasProcessingRefund = orders.some(
-      (order) =>
-        [
-          "PENDING",
-          "INITIATED",
-          "PROCESSING",
-        ].includes(
-          (order.refund_status || "")
-            .trim()
-            .toUpperCase()
-        )
+    const hasProcessingRefund = orders.some((order) =>
+      ["PENDING", "INITIATED", "PROCESSING"].includes(
+        (order.refund_status || "").trim().toUpperCase()
+      )
     );
 
     if (!hasProcessingRefund) {
@@ -284,7 +264,7 @@ useEffect(() => {
     }
 
     const interval = window.setInterval(() => {
-      fetchOrders();
+      void fetchOrders();
     }, 5000);
 
     return () => {
@@ -298,10 +278,7 @@ useEffect(() => {
 
   const handleReorder = (items: OrderItem[]) => {
     if (!items || items.length === 0) {
-      toast.error(
-        "No items available for reorder"
-      );
-
+      toast.error("No items available for reorder");
       return;
     }
 
@@ -321,9 +298,7 @@ useEffect(() => {
   // CUSTOMER REFUND
   // ============================================================
 
-  const handleRequestRefund = async (
-    order: Order
-  ) => {
+  const handleRequestRefund = async (order: Order) => {
     if (!order?.token) {
       toast.error("Invalid order.");
       return;
@@ -340,19 +315,19 @@ useEffect(() => {
       return;
     }
 
+    const confirmed = window.confirm(
+      "Cancel this order and request a refund? This action cannot be undone."
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
     try {
       const token = getToken();
 
       if (!token) {
         toast.error("Please login again");
-        return;
-      }
-
-      const confirmed = window.confirm(
-        "Cancel this order and request a refund? This action cannot be undone."
-      );
-
-      if (!confirmed) {
         return;
       }
 
@@ -367,18 +342,15 @@ useEffect(() => {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            reason:
-              "Customer requested cancellation",
+            reason: "Customer requested cancellation",
           }),
         }
       );
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (response.status === 401) {
-        toast.error(
-          "Your session has expired"
-        );
+        toast.error("Your session has expired");
         return;
       }
 
@@ -401,10 +373,7 @@ useEffect(() => {
 
       await fetchOrders();
     } catch (error) {
-      console.error(
-        "❌ Customer refund request error:",
-        error
-      );
+      console.error("Customer refund request error:", error);
 
       toast.error(
         "Unable to process the refund request. Please try again."
@@ -418,9 +387,7 @@ useEffect(() => {
   // DELETE ORDER
   // ============================================================
 
-  const handleDeleteOrder = async (
-    orderId: string
-  ) => {
+  const handleDeleteOrder = async (orderId: string) => {
     try {
       const token = getToken();
 
@@ -445,12 +412,10 @@ useEffect(() => {
         }
       );
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (response.status === 401) {
-        toast.error(
-          "Your session has expired"
-        );
+        toast.error("Your session has expired");
         return;
       }
 
@@ -465,8 +430,7 @@ useEffect(() => {
       }
 
       toast.success(
-        data.message ||
-          "Order deleted successfully"
+        data.message || "Order deleted successfully"
       );
 
       setSelectedOrder(null);
@@ -474,10 +438,7 @@ useEffect(() => {
 
       await fetchOrders();
     } catch (error) {
-      console.error(
-        "❌ Delete order error:",
-        error
-      );
+      console.error("Delete order error:", error);
 
       toast.error("Failed to delete order");
     }
@@ -487,20 +448,15 @@ useEffect(() => {
   // SHARE ORDER
   // ============================================================
 
-  const handleShareOrder = async (
-    order: Order
-  ) => {
+  const handleShareOrder = async (order: Order) => {
     const text = `
 CampusVita Order 🚀
 
 Token: #${order.token}
 
 Items:
-${order.items
-  .map(
-    (item) =>
-      `${item.name} x ${item.quantity}`
-  )
+${(order.items || [])
+  .map((item) => `${item.name} x ${item.quantity}`)
   .join("\n")}
 
 Total: ₹${order.total}
@@ -518,33 +474,73 @@ Total: ₹${order.total}
       } else {
         await navigator.clipboard.writeText(text);
 
-        toast.success(
-          "Order copied to clipboard"
-        );
+        toast.success("Order copied to clipboard");
       }
     } catch (error) {
-      console.log(
-        "Share cancelled:",
-        error
-      );
+      console.log("Share cancelled:", error);
     }
   };
 
   // ============================================================
-  // RATE ORDER
+  // OPEN RATING
   // ============================================================
 
-  const handleRateOrder = async () => {
-    if (selectedRating === 0) {
+  const openRating = (order: Order) => {
+    const firstItem = order.items?.[0];
+
+    if (!firstItem) {
+      toast.error("No food item available to rate");
+      return;
+    }
+
+    const stallId = firstItem.stall_id?.trim();
+
+    if (!stallId) {
+      console.error(
+        "Cannot open rating modal: missing stall_id",
+        {
+          orderId: order.order_id,
+          token: order.token,
+          firstItem,
+        }
+      );
+
       toast.error(
-        "Please select a rating ⭐"
+        "Unable to identify the stall for this order."
       );
 
       return;
     }
 
-    if (!selectedFoodName) {
-      toast.error("Food item not found");
+    setSelectedStallId(stallId);
+    setSelectedRating(0);
+    setFeedback("");
+    setShowRatingModal(true);
+  };
+
+  // ============================================================
+  // SUBMIT STALL RATING
+  // ============================================================
+
+  const handleRateOrder = async () => {
+    if (isSubmittingRating) {
+      return;
+    }
+
+    if (selectedRating < 1 || selectedRating > 5) {
+      toast.error("Please select a rating ⭐");
+      return;
+    }
+
+    if (!selectedStallId.trim()) {
+      toast.error(
+        "Unable to identify the stall. Please try again."
+      );
+      return;
+    }
+
+    if (feedback.length > 500) {
+      toast.error("Feedback cannot exceed 500 characters.");
       return;
     }
 
@@ -556,24 +552,29 @@ Total: ₹${order.total}
         return;
       }
 
-      const response = await fetch(
-        `${API_URL}/rate-order`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type":
-              "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            food_name: selectedFoodName,
-            rating: selectedRating,
-            feedback,
-          }),
-        }
-      );
+      setIsSubmittingRating(true);
 
-      const data = await response.json();
+      const response = await fetch(`${API_URL}/rate-stall`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          stall_id: selectedStallId,
+          rating: selectedRating,
+          feedback: feedback.trim(),
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (response.status === 401) {
+        toast.error(
+          "Your session has expired. Please login again."
+        );
+        return;
+      }
 
       if (!response.ok) {
         toast.error(
@@ -581,27 +582,50 @@ Total: ₹${order.total}
             data.message ||
             "Failed to submit rating"
         );
+        return;
+      }
 
+      if (data.success === false) {
+        toast.error(
+          data.message || "Failed to save rating"
+        );
         return;
       }
 
       toast.success(
-        data.message ||
-          "Rating saved ⭐"
+        data.message || "Rating saved successfully ⭐"
       );
 
       setShowRatingModal(false);
       setSelectedRating(0);
       setFeedback("");
-      setSelectedFoodName("");
-    } catch (error) {
-      console.error(
-        "❌ Rating error:",
-        error
-      );
+      setSelectedStallId("");
 
-      toast.error("Failed to submit rating");
+      await fetchOrders();
+    } catch (error) {
+      console.error("Rating submission error:", error);
+
+      toast.error(
+        "Unable to submit rating. Please try again."
+      );
+    } finally {
+      setIsSubmittingRating(false);
     }
+  };
+
+  // ============================================================
+  // CLOSE RATING MODAL
+  // ============================================================
+
+  const closeRatingModal = () => {
+    if (isSubmittingRating) {
+      return;
+    }
+
+    setShowRatingModal(false);
+    setSelectedRating(0);
+    setFeedback("");
+    setSelectedStallId("");
   };
 
   // ============================================================
@@ -609,8 +633,9 @@ Total: ₹${order.total}
   // ============================================================
 
   const getStatusStyle = (status: string) => {
-    const normalizedStatus =
-      (status || "").trim().toLowerCase();
+    const normalizedStatus = (status || "")
+      .trim()
+      .toLowerCase();
 
     if (
       normalizedStatus === "completed" ||
@@ -632,10 +657,8 @@ Total: ₹${order.total}
     ) {
       return {
         dot: "bg-red-500",
-        badge:
-          "bg-red-500/10 border-red-500/20",
-        text:
-          "text-red-700 dark:text-red-400",
+        badge: "bg-red-500/10 border-red-500/20",
+        text: "text-red-700 dark:text-red-400",
         label: "Cancelled",
       };
     }
@@ -646,34 +669,25 @@ Total: ₹${order.total}
     ) {
       return {
         dot: "bg-warning",
-        badge:
-          "bg-warning/10 border-warning/20",
-        text:
-          "text-warning",
+        badge: "bg-warning/10 border-warning/20",
+        text: "text-warning",
         label: status || "Preparing",
       };
     }
 
-    if (
-      normalizedStatus ===
-      "ready for pickup"
-    ) {
+    if (normalizedStatus === "ready for pickup") {
       return {
         dot: "bg-blue-500",
-        badge:
-          "bg-blue-500/10 border-blue-500/20",
-        text:
-          "text-blue-700 dark:text-blue-400",
+        badge: "bg-blue-500/10 border-blue-500/20",
+        text: "text-blue-700 dark:text-blue-400",
         label: status || "Ready",
       };
     }
 
     return {
       dot: "bg-zinc-400",
-      badge:
-        "bg-zinc-500/10 border-zinc-500/20",
-      text:
-        "text-[var(--text-secondary)]",
+      badge: "bg-zinc-500/10 border-zinc-500/20",
+      text: "text-[var(--text-secondary)]",
       label: status || "Unknown",
     };
   };
@@ -685,16 +699,14 @@ Total: ₹${order.total}
   const getRefundStatusStyle = (
     refundStatus?: string | null
   ) => {
-    const normalizedStatus =
-      (refundStatus || "")
-        .trim()
-        .toUpperCase();
+    const normalizedStatus = (refundStatus || "")
+      .trim()
+      .toUpperCase();
 
     if (normalizedStatus === "PROCESSED") {
       return {
         dot: "bg-emerald-500",
-        text:
-          "text-emerald-700 dark:text-emerald-400",
+        text: "text-emerald-700 dark:text-emerald-400",
         label: "Refund Completed",
       };
     }
@@ -706,8 +718,7 @@ Total: ₹${order.total}
     ) {
       return {
         dot: "bg-warning",
-        text:
-          "text-warning",
+        text: "text-warning",
         label: "Refund Processing",
       };
     }
@@ -715,8 +726,7 @@ Total: ₹${order.total}
     if (normalizedStatus === "FAILED") {
       return {
         dot: "bg-red-500",
-        text:
-          "text-red-700 dark:text-red-400",
+        text: "text-red-700 dark:text-red-400",
         label: "Refund Failed",
       };
     }
@@ -732,21 +742,12 @@ Total: ₹${order.total}
   // THUMBNAILS
   // ============================================================
 
-  const getVisibleItems = (
-    items: OrderItem[]
-  ) => {
-    return (items || [])
-      .filter(Boolean)
-      .slice(0, 3);
+  const getVisibleItems = (items: OrderItem[]) => {
+    return (items || []).filter(Boolean).slice(0, 3);
   };
 
-  const getRemainingItemCount = (
-    items: OrderItem[]
-  ) => {
-    return Math.max(
-      (items || []).length - 3,
-      0
-    );
+  const getRemainingItemCount = (items: OrderItem[]) => {
+    return Math.max((items || []).length - 3, 0);
   };
 
   // ============================================================
@@ -754,28 +755,7 @@ Total: ₹${order.total}
   // ============================================================
 
   const handleRefresh = () => {
-    fetchOrders(true);
-  };
-
-  // ============================================================
-  // OPEN RATING
-  // ============================================================
-
-  const openRating = (order: Order) => {
-    const firstItem = order.items?.[0];
-
-    if (!firstItem) {
-      toast.error(
-        "No food item available to rate"
-      );
-
-      return;
-    }
-
-    setSelectedFoodName(firstItem.name);
-    setSelectedRating(0);
-    setFeedback("");
-    setShowRatingModal(true);
+    void fetchOrders(true);
   };
 
   // ============================================================
@@ -787,25 +767,17 @@ Total: ₹${order.total}
       <HomeNavbar />
 
       <main className="min-h-screen bg-[var(--background)] px-4 pb-28 pt-5 text-[var(--text-primary)] transition-colors duration-300 sm:px-6 sm:pt-8 md:px-10 md:pb-10">
-
         <div className="mx-auto w-full max-w-4xl">
-
-          {/* ================================================== */}
           {/* HEADER */}
-          {/* ================================================== */}
 
           <div className="flex items-center justify-between gap-4">
-
             <div className="min-w-0">
-
               <div className="flex items-center gap-2.5">
-
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--brand-soft)] text-[var(--brand)]">
                   <PackageCheck size={21} />
                 </div>
 
                 <div className="min-w-0">
-
                   <h1 className="truncate text-2xl font-bold tracking-tight text-[var(--text-primary)] sm:text-3xl">
                     Order History
                   </h1>
@@ -813,11 +785,8 @@ Total: ₹${order.total}
                   <p className="mt-1 text-sm text-[var(--text-secondary)]">
                     Your recent CampusVita orders
                   </p>
-
                 </div>
-
               </div>
-
             </div>
 
             <button
@@ -829,23 +798,15 @@ Total: ₹${order.total}
             >
               <RefreshCw
                 size={18}
-                className={
-                  refreshing
-                    ? "animate-spin"
-                    : ""
-                }
+                className={refreshing ? "animate-spin" : ""}
               />
             </button>
-
           </div>
 
-          {/* ================================================== */}
-          {/* LOADING */}
-          {/* ================================================== */}
+          {/* LOADING / EMPTY / ORDER LIST */}
 
           {loading ? (
-            <div className="cv-glass-card cv-glass-edge mt-6 overflow-hidden rounded-2xl border border-[var(--glass-border)] p-8 text-center">
-
+<div className="cv-glass-card cv-glass-edge mt-6 overflow-hidden rounded-2xl border border-[var(--glass-border)] p-8 text-center">
               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--brand-soft)]">
                 <RefreshCw
                   size={25}
@@ -860,16 +821,9 @@ Total: ₹${order.total}
               <div className="mx-auto mt-5 h-1.5 w-32 overflow-hidden rounded-full bg-[var(--surface-secondary)]">
                 <div className="h-full w-1/2 animate-pulse rounded-full bg-[var(--brand)]" />
               </div>
-
             </div>
           ) : orders.length === 0 ? (
-
-            /* ================================================= */
-            /* EMPTY STATE */
-            /* ================================================= */
-
-            <div className="cv-glass-card cv-glass-edge mt-6 rounded-2xl border border-[var(--glass-border)] p-8 text-center sm:p-12">
-
+<div className="cv-glass-card cv-glass-edge mt-6 rounded-2xl border border-[var(--glass-border)] p-8 text-center sm:p-12">
               <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-[var(--surface-secondary)] text-[var(--text-muted)]">
                 <PackageCheck size={42} />
               </div>
@@ -879,8 +833,7 @@ Total: ₹${order.total}
               </h2>
 
               <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[var(--text-secondary)]">
-                Your completed and current
-                orders will appear here.
+                Your completed and current orders will appear here.
               </p>
 
               <button
@@ -889,498 +842,353 @@ Total: ₹${order.total}
                 disabled={refreshing}
                 className="mt-6 rounded-xl bg-[var(--brand)] px-5 py-3 text-sm font-bold text-white shadow-sm transition-all hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {refreshing
-                  ? "Refreshing..."
-                  : "Refresh Orders"}
+                {refreshing ? "Refreshing..." : "Refresh Orders"}
               </button>
-
             </div>
           ) : (
-
-            /* ================================================= */
-            /* ORDER LIST */
-            /* ================================================= */
-
             <div className="mt-5 flex flex-col gap-3 sm:mt-7 sm:gap-4">
+              {orders.map((order, index) => {
+                const statusStyle = getStatusStyle(order.status);
+                const items = Array.isArray(order.items)
+                  ? order.items
+                  : [];
+                const visibleItems = getVisibleItems(items);
+                const remainingItems =
+                  getRemainingItemCount(items);
+                const isExpanded = expandedOrder === index;
 
-              {orders.map(
-                (order, index) => {
-                  const statusStyle =
-                    getStatusStyle(
-                      order.status
-                    );
+                const isCompleted = [
+                  "completed",
+                  "delivered",
+                ].includes(
+                  (order.status || "").trim().toLowerCase()
+                );
 
-                  const visibleItems =
-                    getVisibleItems(
-                      order.items
-                    );
+                return (
+                  <article
+                    key={
+                      order.order_id ||
+                      `${order.token}-${index}`
+                    }
+                    className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)] transition-all duration-200 hover:-translate-y-[1px] hover:border-[var(--brand)]/30"
+                  >
+                    {/* COMPACT SUMMARY */}
 
-                  const remainingItems =
-                    getRemainingItemCount(
-                      order.items
-                    );
-
-                  const isExpanded =
-                    expandedOrder === index;
-
-                  const isCompleted =
-                    [
-                      "completed",
-                      "delivered",
-                    ].includes(
-                      (
-                        order.status ||
-                        ""
-                      )
-                        .trim()
-                        .toLowerCase()
-                    );
-
-                  return (
-                    <article
-                      key={
-                        order.order_id ||
-                        `${order.token}-${index}`
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedOrder(
+                          isExpanded ? null : index
+                        )
                       }
-                      className="cv-glass-card cv-glass-edge overflow-hidden rounded-2xl border border-[var(--glass-border)] transition-all duration-200 hover:-translate-y-[1px] hover:border-[var(--brand)]/30"
+                      className="cv-glass-card cv-glass-edge w-full overflow-hidden rounded-2xl border border-[var(--glass-border)] text-left transition-all duration-200 hover:-translate-y-[1px] hover:border-[var(--brand)]/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--brand)]"
+                      aria-expanded={isExpanded}
                     >
+                      <div className="p-4 sm:p-5">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`h-2 w-2 shrink-0 rounded-full ${statusStyle.dot}`}
+                              />
 
-                      {/* ====================================== */}
-                      {/* COMPACT SUMMARY */}
-                      {/* ====================================== */}
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setExpandedOrder(
-                            isExpanded
-                              ? null
-                              : index
-                          )
-                        }
-                        className="w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--brand)]"
-                      >
-
-                        <div className="p-4 sm:p-5">
-
-                          {/* TOP */}
-                          <div className="flex items-start justify-between gap-4">
-
-                            <div className="min-w-0">
-
-                              <div className="flex items-center gap-2">
-
-                                <span
-                                  className={`h-2 w-2 shrink-0 rounded-full ${statusStyle.dot}`}
-                                />
-
-                                <span
-                                  className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-bold ${statusStyle.badge} ${statusStyle.text}`}
-                                >
-                                  {statusStyle.label}
-                                </span>
-
-                              </div>
-
-                              <p className="mt-2 truncate text-xs text-[var(--text-muted)]">
-                                {order.date ||
-                                  "Date unavailable"}
-                              </p>
-
-                              <p className="mt-1 text-xs font-semibold text-[var(--text-secondary)]">
-                                {order.token
-                                  ? `Token #${order.token}`
-                                  : `Order #${order.order_id}`}
-                              </p>
-
+                              <span
+                                className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-bold ${statusStyle.badge} ${statusStyle.text}`}
+                              >
+                                {statusStyle.label}
+                              </span>
                             </div>
 
-                            <div className="shrink-0 text-right">
+                            <p className="mt-2 truncate text-xs text-[var(--text-muted)]">
+                              {order.date || "Date unavailable"}
+                            </p>
 
-                              <p className="text-lg font-bold tracking-tight text-[var(--text-primary)] sm:text-xl">
-                                ₹
-                                {Number(
-                                  order.total ||
-                                    0
-                                ).toFixed(2)}
-                              </p>
-
-                              <p className="mt-1 text-[11px] text-[var(--text-muted)]">
-                                {
-                                  order
-                                    .items
-                                    .length
-                                }{" "}
-                                {order.items
-                                  .length ===
-                                1
-                                  ? "item"
-                                  : "items"}
-                              </p>
-
-                            </div>
-
+                            <p className="mt-1 text-xs font-semibold text-[var(--text-secondary)]">
+                              {order.token
+                                ? `Token #${order.token}`
+                                : `Order #${order.order_id}`}
+                            </p>
                           </div>
 
-                          {/* THUMBNAILS */}
-                          {visibleItems.length >
-                            0 && (
-                            <div className="mt-4 flex items-center gap-2">
+                          <div className="shrink-0 text-right">
+                            <p className="text-lg font-bold tracking-tight text-[var(--text-primary)] sm:text-xl">
+                              ₹
+                              {Number(
+                                order.total || 0
+                              ).toFixed(2)}
+                            </p>
 
-                              {visibleItems.map(
-                                (
-                                  item,
-                                  itemIndex
-                                ) => (
-                                  <div
-                                    key={`${order.order_id}-${item.name}-${itemIndex}`}
-                                    className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)] shadow-sm sm:h-14 sm:w-14"
-                                  >
-                                    {item.image ? (
-                                      <img
-                                        src={getImageUrl(
-                                          item.image
-                                        )}
-                                        alt=""
-                                        loading="lazy"
-                                        className="h-full w-full object-cover"
-                                      />
-                                    ) : (
-                                      <div className="flex h-full w-full items-center justify-center text-base">
-                                        🍽️
-                                      </div>
-                                    )}
-                                  </div>
-                                )
-                              )}
+                            <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                              {items.length}{" "}
+                              {items.length === 1 ? "item" : "items"}
+                            </p>
+                          </div>
+                        </div>
 
-                              {remainingItems >
-                                0 && (
-                                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)] text-xs font-bold text-[var(--text-secondary)] sm:h-14 sm:w-14">
-                                  +
-                                  {
-                                    remainingItems
-                                  }
+                        {visibleItems.length > 0 && (
+                          <div className="mt-4 flex items-center gap-2">
+                            {visibleItems.map(
+                              (item, itemIndex) => (
+                                <div
+                                  key={`${order.order_id}-${item.name}-${itemIndex}`}
+                                  className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)] shadow-sm sm:h-14 sm:w-14"
+                                >
+                                  {item.image ? (
+                                    <img
+                                      src={getImageUrl(item.image)}
+                                      alt={item.name || ""}
+                                      loading="lazy"
+                                      className="h-full w-full object-cover"
+                                    />
+                                  ) : (
+                                    <div className="flex h-full w-full items-center justify-center text-base">
+                                      🍽️
+                                    </div>
+                                  )}
                                 </div>
-                              )}
+                              )
+                            )}
 
+                            {remainingItems > 0 && (
+                              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)] text-xs font-bold text-[var(--text-secondary)] sm:h-14 sm:w-14">
+                                +{remainingItems}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="mt-4 flex items-center justify-between">
+                          <span className="text-xs font-medium text-[var(--text-muted)]">
+                            {isExpanded
+                              ? "Hide details"
+                              : "View order details"}
+                          </span>
+
+                          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--brand-soft)]">
+                            <ChevronDown
+                              size={17}
+                              className={`text-[var(--brand)] transition-transform duration-200 ${
+                                isExpanded ? "rotate-180" : ""
+                              }`}
+                            />
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+
+                    {/* EXPANDED DETAILS */}
+
+                    {isExpanded && (
+                      <div className="border-t border-[var(--border)] bg-[var(--surface-secondary)]/60 px-4 pb-4 pt-4 sm:px-5">
+                        {/* ITEMS */}
+
+                        <div>
+                          <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                            Ordered Items
+                          </p>
+
+                          <div className="flex flex-col gap-2">
+                            {items.map((item, itemIndex) => (
+                              <div
+                                key={`${item.name}-${itemIndex}`}
+                                className="flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3"
+                              >
+                                <div className="h-11 w-11 shrink-0 overflow-hidden rounded-lg bg-[var(--surface-secondary)]">
+                                  {item.image ? (
+                                    <img
+                                      src={getImageUrl(item.image)}
+                                      alt={item.name}
+                                      loading="lazy"
+                                      className="h-full w-full object-cover"
+                                    />
+                                  ) : (
+                                    <div className="flex h-full w-full items-center justify-center">
+                                      🍽️
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate text-sm font-semibold text-[var(--text-primary)]">
+                                    {item.name}
+                                  </p>
+
+                                  <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+                                    Qty {item.quantity} • ₹
+                                    {item.price} each
+                                  </p>
+                                </div>
+
+                                <p className="shrink-0 text-sm font-bold text-[var(--text-primary)]">
+                                  ₹
+                                  {(
+                                    Number(item.price) *
+                                    Number(item.quantity)
+                                  ).toFixed(2)}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* ORDER INFORMATION */}
+
+                        <div className="mt-5 grid grid-cols-2 gap-2">
+                          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+                            <p className="text-[11px] font-medium text-[var(--text-muted)]">
+                              Token
+                            </p>
+
+                            <p className="mt-1 text-sm font-bold text-[var(--text-primary)]">
+                              #{order.token}
+                            </p>
+                          </div>
+
+                          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+                            <p className="text-[11px] font-medium text-[var(--text-muted)]">
+                              Pickup Code
+                            </p>
+
+                            <p className="mt-1 text-sm font-bold text-[var(--text-primary)]">
+                              {order.pickup_code ?? "N/A"}
+                            </p>
+                          </div>
+
+                          {order.payment_method && (
+                            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+                              <p className="text-[11px] font-medium text-[var(--text-muted)]">
+                                Payment
+                              </p>
+
+                              <p className="mt-1 truncate text-sm font-bold text-[var(--text-primary)]">
+                                {order.payment_method}
+                              </p>
                             </div>
                           )}
 
-                          {/* BOTTOM */}
-                          <div className="mt-4 flex items-center justify-between">
-
-                            <span className="text-xs font-medium text-[var(--text-muted)]">
-                              {isExpanded
-                                ? "Hide details"
-                                : "View order details"}
-                            </span>
-
-                            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--brand-soft)]">
-                              <ChevronDown
-                                size={17}
-                                className={`text-[var(--brand)] transition-transform duration-200 ${
-                                  isExpanded
-                                    ? "rotate-180"
-                                    : ""
-                                }`}
-                              />
-                            </span>
-
-                          </div>
-
-                        </div>
-
-                      </button>
-
-                      {/* ====================================== */}
-                      {/* EXPANDED DETAILS */}
-                      {/* ====================================== */}
-
-                      {isExpanded && (
-                        <div className="border-t border-[var(--border)] bg-[var(--surface-secondary)]/60 px-4 pb-4 pt-4 sm:px-5">
-
-                          {/* ITEMS */}
-                          <div>
-
-                            <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--text-muted)]">
-                              Ordered Items
+                          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+                            <p className="text-[11px] font-medium text-[var(--text-muted)]">
+                              Status
                             </p>
 
-                            <div className="flex flex-col gap-2">
-
-                              {order.items.map(
-                                (
-                                  item,
-                                  itemIndex
-                                ) => (
-                                  <div
-                                    key={`${item.name}-${itemIndex}`}
-                                    className="flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3"
-                                  >
-
-                                    <div className="h-11 w-11 shrink-0 overflow-hidden rounded-lg bg-[var(--surface-secondary)]">
-
-                                      {item.image ? (
-                                        <img
-                                          src={getImageUrl(
-                                            item.image
-                                          )}
-                                          alt={
-                                            item.name
-                                          }
-                                          loading="lazy"
-                                          className="h-full w-full object-cover"
-                                        />
-                                      ) : (
-                                        <div className="flex h-full w-full items-center justify-center">
-                                          🍽️
-                                        </div>
-                                      )}
-
-                                    </div>
-
-                                    <div className="min-w-0 flex-1">
-
-                                      <p className="truncate text-sm font-semibold text-[var(--text-primary)]">
-                                        {
-                                          item.name
-                                        }
-                                      </p>
-
-                                      <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-                                        Qty{" "}
-                                        {
-                                          item.quantity
-                                        }
-                                        {" • "}
-                                        ₹
-                                        {
-                                          item.price
-                                        }{" "}
-                                        each
-                                      </p>
-
-                                    </div>
-
-                                    <p className="shrink-0 text-sm font-bold text-[var(--text-primary)]">
-                                      ₹
-                                      {(
-                                        Number(
-                                          item.price
-                                        ) *
-                                        Number(
-                                          item.quantity
-                                        )
-                                      ).toFixed(
-                                        2
-                                      )}
-                                    </p>
-
-                                  </div>
-                                )
-                              )}
-
-                            </div>
-
+                            <p
+                              className={`mt-1 truncate text-sm font-bold ${statusStyle.text}`}
+                            >
+                              {statusStyle.label}
+                            </p>
                           </div>
 
-                          {/* INFORMATION */}
-                          <div className="mt-5 grid grid-cols-2 gap-2">
-
-                            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+                          {order.refund_status && (
+                            <div className="col-span-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
                               <p className="text-[11px] font-medium text-[var(--text-muted)]">
-                                Token
+                                Refund
                               </p>
 
-                              <p className="mt-1 text-sm font-bold text-[var(--text-primary)]">
-                                #
-                                {
-                                  order.token
-                                }
-                              </p>
-                            </div>
+                              <div className="mt-1 flex items-center gap-2">
+                                <span
+                                  className={`h-2 w-2 shrink-0 rounded-full ${
+                                    getRefundStatusStyle(
+                                      order.refund_status
+                                    ).dot
+                                  }`}
+                                />
 
-                            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
-                              <p className="text-[11px] font-medium text-[var(--text-muted)]">
-                                Pickup Code
-                              </p>
-
-                              <p className="mt-1 text-sm font-bold text-[var(--text-primary)]">
-                                {
-                                  order.pickup_code ??
-                                  "N/A"
-                                }
-                              </p>
-                            </div>
-
-                            {order.payment_method && (
-                              <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
-                                <p className="text-[11px] font-medium text-[var(--text-muted)]">
-                                  Payment
-                                </p>
-
-                                <p className="mt-1 truncate text-sm font-bold text-[var(--text-primary)]">
+                                <p
+                                  className={`truncate text-sm font-bold ${
+                                    getRefundStatusStyle(
+                                      order.refund_status
+                                    ).text
+                                  }`}
+                                >
                                   {
-                                    order.payment_method
+                                    getRefundStatusStyle(
+                                      order.refund_status
+                                    ).label
                                   }
                                 </p>
                               </div>
-                            )}
 
-                            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
-                              <p className="text-[11px] font-medium text-[var(--text-muted)]">
-                                Status
-                              </p>
-
-                              <p
-                                className={`mt-1 truncate text-sm font-bold ${statusStyle.text}`}
-                              >
-                                {
-                                  statusStyle.label
-                                }
-                              </p>
-                            </div>
-
-                            {order.refund_status && (
-                              <div className="col-span-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
-                                <p className="text-[11px] font-medium text-[var(--text-muted)]">
-                                  Refund
-                                </p>
-
-                                <div className="mt-1 flex items-center gap-2">
-
-                                  <span
-                                    className={`h-2 w-2 shrink-0 rounded-full ${
-                                      getRefundStatusStyle(
-                                        order.refund_status
-                                      ).dot
-                                    }`}
-                                  />
-
-                                  <p
-                                    className={`truncate text-sm font-bold ${
-                                      getRefundStatusStyle(
-                                        order.refund_status
-                                      ).text
-                                    }`}
-                                  >
-                                    {
-                                      getRefundStatusStyle(
-                                        order.refund_status
-                                      ).label
-                                    }
+                              {order.refund_amount_paise &&
+                                order.refund_amount_paise > 0 && (
+                                  <p className="mt-1 text-xs text-[var(--text-muted)]">
+                                    Amount: ₹
+                                    {(
+                                      order.refund_amount_paise /
+                                      100
+                                    ).toFixed(2)}
                                   </p>
+                                )}
+                            </div>
+                          )}
+                        </div>
 
-                                </div>
+                        {/* ACTIONS */}
 
-                                {order.refund_amount_paise &&
-                                  order.refund_amount_paise > 0 && (
-                                    <p className="mt-1 text-xs text-[var(--text-muted)]">
-                                      Amount: ₹
-                                      {(
-                                        order.refund_amount_paise /
-                                        100
-                                      ).toFixed(2)}
-                                    </p>
-                                  )}
+                        <div className="mt-5 grid grid-cols-2 gap-2">
+                          {order.refund_eligible === true && (
+                            <button
+                              type="button"
+                              disabled={
+                                refundingToken === order.token
+                              }
+                              onClick={() =>
+                                void handleRequestRefund(order)
+                              }
+                              className="col-span-2 rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-3 text-sm font-bold text-red-700 transition-all hover:border-red-500/40 hover:bg-red-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-400"
+                            >
+                              {refundingToken === order.token
+                                ? "Processing Refund..."
+                                : "Cancel & Request Refund"}
+                            </button>
+                          )}
 
-                              </div>
-                            )}
+                          <button
+                            type="button"
+                            onClick={() => handleReorder(items)}
+                            className="rounded-xl bg-[var(--brand)] px-3 py-3 text-sm font-bold text-white shadow-sm transition-all hover:brightness-95 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+                          >
+                            Reorder
+                          </button>
 
-                          </div>
+                          {isCompleted && (
+                            <button
+                              type="button"
+                              onClick={() => openRating(order)}
+                              className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-sm font-bold text-[var(--text-primary)] transition-all hover:border-[var(--brand)] hover:bg-[var(--brand-soft)] hover:text-[var(--brand)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+                            >
+                              Rate Order
+                            </button>
+                          )}
 
-                          {/* ACTIONS */}
-                          <div className="mt-5 grid grid-cols-2 gap-2">
-
-                            {order.refund_eligible ===
-                              true && (
-                              <button
-                                type="button"
-                                disabled={
-                                  refundingToken ===
-                                  order.token
-                                }
-                                onClick={() =>
-                                  handleRequestRefund(
-                                    order
-                                  )
-                                }
-                                className="col-span-2 rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-3 text-sm font-bold text-red-700 transition-all hover:border-red-500/40 hover:bg-red-500/15 dark:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 disabled:cursor-not-allowed disabled:opacity-50"
-                              >
-                                {refundingToken ===
-                                order.token
-                                  ? "Processing Refund..."
-                                  : "Cancel & Request Refund"}
-                              </button>
-                            )}
-
+                          {!isCompleted && (
                             <button
                               type="button"
                               onClick={() =>
-                                handleReorder(
-                                  order.items
-                                )
+                                void handleShareOrder(order)
                               }
-                              className="rounded-xl bg-[var(--brand)] px-3 py-3 text-sm font-bold text-white shadow-sm transition-all hover:brightness-95 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+                              className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-sm font-bold text-[var(--text-primary)] transition-all hover:border-[var(--brand)] hover:bg-[var(--brand-soft)] hover:text-[var(--brand)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
                             >
-                              Reorder
+                              Share
                             </button>
-
-                            {isCompleted && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  openRating(
-                                    order
-                                  )
-                                }
-                                className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-sm font-bold text-[var(--text-primary)] transition-all hover:border-[var(--brand)] hover:bg-[var(--brand-soft)] hover:text-[var(--brand)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
-                              >
-                                Rate Order
-                              </button>
-                            )}
-
-                            {!isCompleted && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleShareOrder(
-                                    order
-                                  )
-                                }
-                                className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-sm font-bold text-[var(--text-primary)] transition-all hover:border-[var(--brand)] hover:bg-[var(--brand-soft)] hover:text-[var(--brand)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
-                              >
-                                Share
-                              </button>
-                            )}
-
-                          </div>
-
-                          {/* MORE OPTIONS */}
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSelectedOrder(
-                                index
-                              )
-                            }
-                            className="mt-3 w-full rounded-xl border border-[var(--border)] py-2.5 text-xs font-semibold text-[var(--text-muted)] transition-colors hover:border-[var(--brand)]/40 hover:bg-[var(--brand-soft)] hover:text-[var(--brand)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
-                          >
-                            More Order Options
-                          </button>
-
+                          )}
                         </div>
-                      )}
 
-                    </article>
-                  );
-                }
-              )}
+                        {/* MORE OPTIONS */}
 
+                        <button
+                          type="button"
+                          onClick={() => setSelectedOrder(index)}
+                          className="mt-3 w-full rounded-xl border border-[var(--border)] py-2.5 text-xs font-semibold text-[var(--text-muted)] transition-colors hover:border-[var(--brand)]/40 hover:bg-[var(--brand-soft)] hover:text-[var(--brand)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+                        >
+                          More Order Options
+                        </button>
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
             </div>
           )}
-
         </div>
       </main>
 
@@ -1388,146 +1196,152 @@ Total: ₹${order.total}
       {/* ORDER OPTIONS MODAL */}
       {/* ====================================================== */}
 
-      {selectedOrder !== null &&
-        orders[selectedOrder] && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+      {selectedOrder !== null && orders[selectedOrder] && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setSelectedOrder(null);
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="order-options-title"
+            className="cv-glass-modal cv-glass-edge w-full max-w-md rounded-2xl border border-[var(--glass-border)] p-6 text-[var(--text-primary)] sm:rounded-3xl sm:p-8"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--brand)]">
+                  Order
+                </p>
 
-            <div className="cv-glass-modal cv-glass-edge w-full max-w-md rounded-2xl border border-[var(--glass-border)] p-6 text-[var(--text-primary)] sm:rounded-3xl sm:p-8">
-
-              <div className="flex items-center justify-between">
-
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--brand)]">
-                    Order
-                  </p>
-
-                  <h2 className="mt-1 text-xl font-bold tracking-tight sm:text-2xl">
-                    Order Options
-                  </h2>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    setSelectedOrder(null)
-                  }
-                  aria-label="Close order options"
-                  className="rounded-xl border border-transparent p-2 text-[var(--text-secondary)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+                <h2
+                  id="order-options-title"
+                  className="mt-1 text-xl font-bold tracking-tight sm:text-2xl"
                 >
-                  <X size={20} />
-                </button>
-
+                  Order Options
+                </h2>
               </div>
 
-              <div className="mt-6 flex flex-col gap-2">
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleDeleteOrder(
-                      orders[
-                        selectedOrder
-                      ].order_id
-                    )
-                  }
-                  className="flex items-center gap-3 rounded-xl border border-transparent px-3 py-3 text-left text-red-700 transition-colors hover:border-red-500/20 hover:bg-red-500/10 dark:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
-                >
-                  <Trash2 size={20} />
-                  <span className="font-semibold">
-                    Delete Order
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleShareOrder(
-                      orders[
-                        selectedOrder
-                      ]
-                    )
-                  }
-                  className="flex items-center gap-3 rounded-xl border border-transparent px-3 py-3 text-left text-emerald-700 transition-colors hover:border-emerald-500/20 hover:bg-emerald-500/10 dark:text-emerald-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-                >
-                  <Share2 size={20} />
-                  <span className="font-semibold">
-                    Share Order
-                  </span>
-                </button>
-
-              </div>
-
+              <button
+                type="button"
+                onClick={() => setSelectedOrder(null)}
+                aria-label="Close order options"
+                className="rounded-xl border border-transparent p-2 text-[var(--text-secondary)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+              >
+                <X size={20} />
+              </button>
             </div>
 
+            <div className="mt-6 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  void handleDeleteOrder(
+                    orders[selectedOrder].order_id
+                  )
+                }
+                className="flex items-center gap-3 rounded-xl border border-transparent px-3 py-3 text-left text-red-700 transition-colors hover:border-red-500/20 hover:bg-red-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:text-red-400"
+              >
+                <Trash2 size={20} />
+                <span className="font-semibold">
+                  Delete Order
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  void handleShareOrder(orders[selectedOrder])
+                }
+                className="flex items-center gap-3 rounded-xl border border-transparent px-3 py-3 text-left text-emerald-700 transition-colors hover:border-emerald-500/20 hover:bg-emerald-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-emerald-400"
+              >
+                <Share2 size={20} />
+                <span className="font-semibold">
+                  Share Order
+                </span>
+              </button>
+            </div>
           </div>
-        )}
+        </div>
+      )}
 
       {/* ====================================================== */}
       {/* RATING MODAL */}
       {/* ====================================================== */}
 
       {showRatingModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-
-          <div className="cv-glass-modal cv-glass-edge w-full max-w-md rounded-2xl border border-[var(--glass-border)] p-6 text-[var(--text-primary)] sm:rounded-3xl sm:p-8">
-
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              !isSubmittingRating
+            ) {
+              closeRatingModal();
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rating-modal-title"
+            className="cv-glass-modal cv-glass-edge w-full max-w-md rounded-2xl border border-[var(--glass-border)] p-6 text-[var(--text-primary)] sm:rounded-3xl sm:p-8"
+          >
             <div className="flex items-center justify-between">
-
               <div>
                 <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--brand)]">
                   Feedback
                 </p>
 
-                <h2 className="mt-1 text-xl font-bold tracking-tight sm:text-2xl">
-                  Rate Order
+                <h2
+                  id="rating-modal-title"
+                  className="mt-1 text-xl font-bold tracking-tight sm:text-2xl"
+                >
+                  Rate Your Experience
                 </h2>
               </div>
 
               <button
                 type="button"
-                onClick={() => {
-                  setShowRatingModal(false);
-                  setSelectedRating(0);
-                  setFeedback("");
-                }}
+                onClick={closeRatingModal}
+                disabled={isSubmittingRating}
                 aria-label="Close rating modal"
-                className="rounded-xl border border-transparent p-2 text-[var(--text-secondary)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+                className="rounded-xl border border-transparent p-2 text-[var(--text-secondary)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <X size={20} />
               </button>
-
             </div>
 
             {/* STARS */}
 
-            <div className="mt-7 flex justify-center gap-2">
-
-              {[1, 2, 3, 4, 5].map(
-                (star) => (
-                  <button
-                    key={star}
-                    type="button"
-                    onClick={() =>
-                      setSelectedRating(
-                        star
-                      )
+            <div
+              className="mt-7 flex justify-center gap-2"
+              role="group"
+              aria-label="Choose a rating"
+            >
+              {[1, 2, 3, 4, 5].map((star) => (
+                <button
+                  key={star}
+                  type="button"
+                  onClick={() => setSelectedRating(star)}
+                  disabled={isSubmittingRating}
+                  className="rounded-lg p-1 transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-yellow-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label={`Rate ${star} stars`}
+                  aria-pressed={selectedRating === star}
+                >
+                  <Star
+                    size={34}
+                    className={
+                      star <= selectedRating
+                        ? "fill-yellow-400 text-yellow-400"
+                        : "text-[var(--text-muted)]"
                     }
-                    className="rounded-lg p-1 transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-yellow-400"
-                    aria-label={`Rate ${star} stars`}
-                  >
-                    <Star
-                      size={34}
-                      className={
-                        star <=
-                        selectedRating
-                          ? "fill-yellow-400 text-yellow-400"
-                          : "text-[var(--text-muted)]"
-                      }
-                    />
-                  </button>
-                )
-              )}
-
+                  />
+                </button>
+              ))}
             </div>
 
             <p className="mt-3 text-center text-xs text-[var(--text-muted)]">
@@ -1539,26 +1353,37 @@ Total: ₹${order.total}
             {/* FEEDBACK */}
 
             <textarea
-              placeholder="Write feedback..."
+              placeholder="Write feedback (optional)..."
               value={feedback}
-              onChange={(e) =>
-                setFeedback(e.target.value)
+              maxLength={500}
+              onChange={(event) =>
+                setFeedback(event.target.value)
               }
-              className="mt-6 w-full resize-none rounded-xl border border-[var(--border)] bg-[var(--input)] p-4 text-sm text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)] transition-colors focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/15"
+              disabled={isSubmittingRating}
+              aria-label="Rating feedback"
+              className="mt-6 w-full resize-none rounded-xl border border-[var(--border)] bg-[var(--input)] p-4 text-sm text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)] transition-colors focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/15 disabled:cursor-not-allowed disabled:opacity-60"
               rows={4}
             />
 
+            <p className="mt-1 text-right text-xs text-[var(--text-muted)]">
+              {feedback.length}/500
+            </p>
+
             <button
               type="button"
-              onClick={handleRateOrder}
-              className="mt-4 w-full rounded-xl bg-[var(--brand)] py-3.5 text-sm font-bold text-white shadow-sm transition-all hover:brightness-95 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
+              onClick={() => void handleRateOrder()}
+              disabled={
+                isSubmittingRating ||
+                selectedRating < 1 ||
+                !selectedStallId
+              }
+              className="mt-4 w-full rounded-xl bg-[var(--brand)] py-3.5 text-sm font-bold text-white shadow-sm transition-all hover:brightness-95 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Submit Rating
+              {isSubmittingRating
+                ? "Submitting Rating..."
+                : "Submit Rating"}
             </button>
-            
-
           </div>
-
         </div>
       )}
     </>

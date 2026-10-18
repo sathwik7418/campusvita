@@ -13,6 +13,8 @@ import {
   Clock3,
   Package,
   RefreshCw,
+  ShoppingBag,
+  Sparkles,
   Store,
   UtensilsCrossed,
   XCircle,
@@ -1277,7 +1279,7 @@ const socket = io(API_URL, {
                 No order found
               </h1>
 
-              <p className="mt-2 text-sm leading-6 text-gray-500">
+              <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
                 Your latest order will appear
                 here once it is available.
               </p>
@@ -1323,7 +1325,7 @@ const socket = io(API_URL, {
 
           <div className="flex items-center justify-between gap-4">
             <div>
-              <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-gray-500">
+              <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-[var(--text-secondary)]">
                 <UtensilsCrossed className="h-4 w-4 text-brand" />
                 CampusVita
               </div>
@@ -1332,7 +1334,7 @@ const socket = io(API_URL, {
                 Track Order
               </h1>
 
-              <p className="mt-1 text-xs text-gray-500 sm:text-sm">
+              <p className="mt-1 text-xs text-[var(--text-secondary)] sm:text-sm">
                 Follow every stall preparing
                 your order in real time.
               </p>
@@ -1356,99 +1358,88 @@ const socket = io(API_URL, {
             </button>
           </div>
 
-          {/* =====================================================
-              ORDER HEADER CARD
-          ===================================================== */}
-
+          {/* PREMIUM ORDER SUMMARY BANNER */}
           <section
-            className={`cv-glass-card mt-6 overflow-hidden rounded-[26px] ${
+            className={`relative mt-6 overflow-hidden rounded-[28px] border border-[var(--border)] bg-[var(--surface)] shadow-[0_16px_45px_rgba(54,43,120,0.10)] transition-colors duration-300 ${
               order.cancelled
-                ? "opacity-80"
-                : ""
+                ? "border-[var(--border)]"
+                : "border-violet-200/70 dark:border-[var(--border)]"
             }`}
           >
-            <div
-              className={`p-5 sm:p-7 ${
-                order.cancelled
-                  ? "opacity-70"
-                  : ""
-              }`}
-            >
-              <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+            {!order.cancelled && (
+              <div className="relative isolate overflow-hidden bg-[#5145CD] text-white">
+                <img
+                  src="/images/order-tracking-banner.png"
+                  alt="CampusVita order tracking banner"
+                  className="relative z-0 block h-auto max-h-[180px] min-h-[72px] w-full object-contain object-center sm:absolute sm:inset-0 sm:h-full sm:max-h-none sm:object-cover sm:object-left"
+                />
 
-                <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-brand/70 sm:text-xs">
-                    Order ID
+                <div className="pointer-events-none absolute inset-0 hidden bg-gradient-to-r from-[#30258F]/65 via-[#30258F]/45 to-[#30258F]/75 sm:block" />
+
+                <div className="relative z-10 grid min-h-[190px] grid-cols-2 items-center gap-x-3 gap-y-3 bg-[#5145CD] px-4 py-4 sm:min-h-[236px] sm:grid-cols-3 sm:gap-6 sm:bg-transparent sm:px-8 sm:py-8">
+                  {/* Order ID and date */}
+                  <div className="min-w-0 rounded-xl border border-white/15 bg-[#30258F]/65 p-3 backdrop-blur-sm sm:border-0 sm:bg-transparent sm:p-0 sm:backdrop-blur-0">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.13em] text-white/80 sm:text-xs sm:tracking-[0.15em]">
+                      Order ID
+                    </div>
+
+                    <div className="mt-1 break-words text-base font-black tracking-tight text-white sm:text-xl">
+                      #CV{String(order.token).padStart(5, "0")}
+                    </div>
+
+                    <div className="mt-2 text-[11px] font-medium leading-4 text-white/90 sm:text-sm">
+                      {formatDate(order.created_at || order.date)}
+                    </div>
                   </div>
 
-                  <div className="cv-tnum mt-1 text-2xl font-bold sm:text-3xl">
-                    #CV
-                    {String(
-                      order.token
-                    ).padStart(5, "0")}
+                  {/* Actual order total */}
+                  <div className="col-span-2 min-w-0 rounded-xl border border-transparent bg-transparent p-3 sm:col-span-1 sm:translate-x-28 sm:border-0 sm:bg-transparent sm:p-0 sm:text-center">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.13em] text-white/80 sm:text-xs sm:tracking-[0.15em]">
+                      Total Amount
+                    </div>
+
+                    <div className="mt-1 break-words text-2xl font-black tracking-tight !text-white sm:text-3xl">
+                      ₹{Number(order.total || 0).toFixed(2)}
+                    </div>
                   </div>
 
-                  <div className="mt-2 text-xs text-[var(--text-secondary)] sm:text-sm">
-                    {formatDate(
-                      order.created_at ||
-                        order.date
-                    )}
-                  </div>
-                </div>
+                  {/* Live overall status and stall readiness */}
+                  <div className="col-span-2 min-w-0 rounded-xl border border-white/15 bg-[#30258F]/65 p-3 backdrop-blur-sm sm:col-span-1 sm:justify-self-end sm:border-0 sm:bg-transparent sm:p-0 sm:text-right sm:backdrop-blur-0">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.13em] text-white/80 sm:text-xs sm:tracking-[0.15em]">
+                      Order Status
+                    </div>
 
-                <div className="flex items-center justify-between gap-4 sm:block sm:text-right">
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-brand/70 sm:text-xs">
-                    Total Amount
-                  </div>
+                    <div className="mt-1 break-words text-lg font-black text-white sm:text-xl">
+                      {overallStatus}
+                    </div>
 
-                  <div className="cv-tnum mt-1 text-xl font-bold sm:text-2xl">
-                    ₹
-                    {Number(
-                      order.total || 0
-                    ).toFixed(2)}
-                  </div>
-                </div>
-
-                <div
-                  className={`rounded-xl border px-4 py-2 text-center sm:px-5 ${
-                    order.cancelled
-                      ? "border-[var(--border)] bg-black text-gray-400"
-                      : "border-brand/30 bg-[var(--surface)]"
-                  }`}
-                >
-                  <div
-                    className={`text-sm font-bold ${
-                      order.cancelled
-                        ? "text-gray-400"
-                        : "text-brand"
-                    }`}
-                  >
-                    {overallStatus}
+                    <div className="mt-1 text-xs font-semibold text-white/90 sm:text-sm">
+                      Stalls {readyStalls} of {activeStalls} Ready
+                    </div>
                   </div>
                 </div>
-
               </div>
+            )}
 
-              {/* Complete cancellation message */}
-              {order.cancelled && (
-                <div className="mt-5 flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
-                  <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-gray-500" />
+            {/* Preserve the existing cancellation message */}
+            {order.cancelled && (
+              <div className="p-5 sm:p-7">
+                <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4">
+                  <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-500" />
 
                   <div>
-                    <div className="text-sm font-bold text-gray-300">
+                    <div className="text-sm font-bold text-red-700">
                       Order Cancelled
                     </div>
 
-                    <p className="mt-1 text-xs leading-5 text-gray-600">
-                      {getOrderCancellationReason(
-                        order
-                      ) ||
+                    <p className="mt-1 text-xs leading-5 text-red-600">
+                      {getOrderCancellationReason(order) ||
                         "This order was cancelled by the vendor."}
                     </p>
                   </div>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </section>
 
           {/* =====================================================
@@ -1456,11 +1447,7 @@ const socket = io(API_URL, {
           ===================================================== */}
 
           <section
-            className={`mt-5 rounded-[26px] border p-5 sm:p-7 ${
-              order.cancelled
-                ? "border-[var(--border)] bg-[var(--surface)]"
-                : "border-[var(--border)] bg-[var(--surface)]"
-            }`}
+            className="mt-5 rounded-[26px] border border-[var(--border)] bg-[var(--surface)] p-5 transition-colors duration-300 hover:border-brand/30 sm:p-7"
           >
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -1468,7 +1455,7 @@ const socket = io(API_URL, {
                   Overall Order Status
                 </h2>
 
-                <p className="mt-1 text-xs leading-5 text-gray-500 sm:text-sm">
+                <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)] sm:text-sm">
                   {getOverallStatusDescription(
                     overallStatus
                   )}
@@ -1478,7 +1465,7 @@ const socket = io(API_URL, {
               <div
                 className={`shrink-0 rounded-full border px-3 py-1.5 text-[10px] font-bold sm:text-xs ${
                   order.cancelled
-                    ? "border-[var(--border)] bg-black text-gray-500"
+                    ? "border-[var(--border)] bg-[var(--surface-secondary)] text-[var(--text-secondary)]"
                     : "border-brand/20 bg-brand/10 text-brand"
                 }`}
               >
@@ -1494,13 +1481,13 @@ const socket = io(API_URL, {
 
             {order.cancelled ? (
               <div className="mt-7 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 text-center">
-                <XCircle className="mx-auto h-9 w-9 text-gray-600" />
+                <XCircle className="mx-auto h-9 w-9 text-[var(--text-secondary)]" />
 
-                <div className="mt-3 text-sm font-bold text-gray-400">
+<div className="mt-3 text-sm font-black text-[var(--text-secondary)]">
                   Order Cancelled
                 </div>
 
-                <p className="mt-1 text-xs text-gray-700">
+                <p className="mt-1 text-xs text-[var(--text-secondary)]">
                   No further preparation is taking place.
                 </p>
               </div>
@@ -1509,7 +1496,7 @@ const socket = io(API_URL, {
                 {/* Overall timeline */}
                 <div className="mt-7 hidden sm:block">
                   <div className="relative">
-                    <div className="absolute left-[8%] right-[8%] top-5 h-[2px] bg-white/10" />
+                    <div className="absolute left-[8%] right-[8%] top-5 h-[2px] bg-[var(--border)]" />
 
                     <div
                       className="absolute left-[8%] top-5 h-[2px] bg-brand transition-all duration-500"
@@ -1570,8 +1557,8 @@ const socket = io(API_URL, {
                             <div
                               className={`flex h-10 w-10 items-center justify-center rounded-full border ${
                                 step.active
-                                  ? "border-brand bg-brand text-[var(--on-primary)]"
-                                  : "border-[var(--border)] bg-[var(--surface)] text-gray-600"
+                                  ? "border-brand bg-brand text-white shadow-[0_4px_12px_rgba(98,84,217,0.25)]"
+                                  : "border-[var(--border)] bg-[var(--surface-secondary)] text-[var(--text-secondary)]"
                               }`}
                             >
                               {step.active ? (
@@ -1586,8 +1573,8 @@ const socket = io(API_URL, {
                             <span
                               className={`mt-2 text-xs font-semibold ${
                                 step.active
-                                  ? "text-white"
-                                  : "text-gray-600"
+                                  ? "text-[var(--text-primary)]"
+                                  : "text-[var(--text-secondary)]"
                               }`}
                             >
                               {
@@ -1633,10 +1620,10 @@ const socket = io(API_URL, {
                       return (
                         <div
                           key={label}
-                          className={`rounded-xl border px-2 py-3 text-center ${
+                          className={`rounded-2xl border px-2 py-3 text-center transition-colors duration-300 ${
                             active
-                              ? "border-brand/30 bg-brand/10 text-brand"
-                              : "border-[var(--border)] bg-[var(--surface)] text-gray-600"
+                              ? "border-brand/40 bg-brand/10 text-brand"
+                              : "border-[var(--border)] bg-[var(--surface-secondary)] text-[var(--text-secondary)]"
                           }`}
                         >
                           <div className="text-[10px] font-bold">
@@ -1662,7 +1649,7 @@ const socket = io(API_URL, {
                   Stall Wise Tracking
                 </h2>
 
-                <p className="mt-1 text-xs text-gray-600 sm:text-sm">
+                <p className="mt-1 text-xs text-[var(--text-secondary)] sm:text-sm">
                   Each stall updates independently.
                 </p>
               </div>
@@ -1671,13 +1658,13 @@ const socket = io(API_URL, {
             {visibleStallStates.length ===
               0 ? (
               <div className="rounded-[26px] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
-                <XCircle className="mx-auto h-8 w-8 text-gray-700" />
+                <XCircle className="mx-auto h-8 w-8 text-[var(--text-secondary)]" />
 
-                <div className="mt-3 text-sm font-bold text-gray-500">
+                <div className="mt-3 text-sm font-bold text-[var(--text-secondary)]">
                   No active stall orders
                 </div>
 
-                <p className="mt-1 text-xs text-gray-700">
+                <p className="mt-1 text-xs text-[var(--text-secondary)]">
                   All stall orders have been cancelled.
                 </p>
               </div>
@@ -1731,7 +1718,7 @@ const socket = io(API_URL, {
                         key={
                           stallState.stall_id
                         }
-                        className="overflow-hidden rounded-[26px] border border-[var(--border)] bg-[var(--surface)] shadow-[0_18px_60px_rgba(0,0,0,0.28)]"
+                        className="overflow-hidden rounded-[26px] border border-[var(--border)] bg-[var(--surface)] shadow-[0_12px_36px_rgba(48,40,94,0.08)]"
                       >
 
                         {/* =================================================
@@ -1767,7 +1754,7 @@ const socket = io(API_URL, {
                                     )}
                                   </h3>
 
-                                  <p className="mt-1 text-[11px] text-gray-600 sm:text-xs">
+                                  <p className="mt-1 text-[11px] text-[var(--text-secondary)] sm:text-xs">
                                     {
                                       stallItems.length
                                     }{" "}
@@ -1782,10 +1769,10 @@ const socket = io(API_URL, {
                                 <div
                                   className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10px] font-bold sm:text-xs ${
                                     isReady
-                                      ? "bg-emerald-500/15 text-emerald-400"
+                                      ? "bg-emerald-100/70 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300"
                                       : isCooking
-                                        ? "bg-brand/15 text-brand"
-                                        : "bg-[var(--surface-secondary)] text-gray-400"
+                                        ? "bg-brand/10 text-brand"
+                                        : "bg-[var(--surface-secondary)] text-[var(--text-secondary)]"
                                   }`}
                                 >
                                   {getStallStatusLabel(
@@ -1804,7 +1791,7 @@ const socket = io(API_URL, {
                             <div
                               className={`mt-4 rounded-2xl border p-4 ${
                                 isOverdue
-                                  ? "border-[color-mix(in_srgb,var(--danger)_25%,transparent)] bg-[var(--danger-soft)]"
+                                  ? "border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/40"
                                   : "border-[var(--border)] bg-[var(--surface-secondary)]"
                               }`}
                             >
@@ -1813,15 +1800,15 @@ const socket = io(API_URL, {
                                   <div
                                     className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
                                       isOverdue
-                                        ? "bg-[var(--danger-soft)]"
-                                        : "bg-[var(--surface-tertiary)]"
+                                        ? "bg-red-100 dark:bg-red-900/40"
+                                        : "bg-brand/10"
                                     }`}
                                   >
                                     <Clock3
                                       className={`h-5 w-5 ${
                                         isOverdue
-                                          ? "text-[var(--danger)]"
-                                          : "text-[var(--text-secondary)]"
+                                          ? "text-red-600 dark:text-red-400"
+                                          : "text-brand"
                                       }`}
                                     />
                                   </div>
@@ -1830,7 +1817,7 @@ const socket = io(API_URL, {
                                     <div
                                       className={`text-xs font-bold sm:text-sm ${
                                         isOverdue
-                                          ? "text-[var(--danger)]"
+                                          ? "text-red-700 dark:text-red-300"
                                           : "text-[var(--text-primary)]"
                                       }`}
                                     >
@@ -1839,7 +1826,7 @@ const socket = io(API_URL, {
                                         : "Estimated preparation time"}
                                     </div>
 
-                                    <div className="mt-1 text-[10px] text-[var(--text-muted)] sm:text-xs">
+                                    <div className="mt-1 text-[10px] text-[var(--text-secondary)] sm:text-xs">
                                       {isOverdue
                                         ? "The vendor is still preparing your food."
                                         : stallState.estimatedPreparationMinutes >
@@ -1853,7 +1840,7 @@ const socket = io(API_URL, {
                                 {!isOverdue &&
                                   remaining !==
                                     null && (
-                                    <div className="cv-tnum shrink-0 font-mono text-xl font-bold tracking-tight text-[var(--text-primary)] sm:text-2xl">
+                                    <div className="shrink-0 font-mono text-xl font-black tracking-tight text-brand sm:text-2xl">
                                       {formatCountdown(
                                         remaining
                                       )}
@@ -1913,10 +1900,10 @@ const socket = io(API_URL, {
                                         className={`flex h-8 w-8 items-center justify-center rounded-full border ${
                                           completed ||
                                           isReady
-                                            ? "border-brand bg-brand text-[var(--on-primary)]"
+                                            ? "border-[#6254D9] bg-[#6254D9] text-white shadow-[0_4px_12px_rgba(98,84,217,0.25)]"
                                             : active
                                               ? "border-brand bg-brand/10 text-brand"
-                                              : "border-[var(--border)] bg-[var(--surface)] text-gray-700"
+                                              : "border-[var(--border)] bg-[var(--surface-secondary)] text-[var(--text-secondary)]"
                                         }`}
                                       >
                                         {completed ||
@@ -1935,8 +1922,8 @@ const socket = io(API_URL, {
                                           active ||
                                           completed ||
                                           isReady
-                                            ? "text-gray-300"
-                                            : "text-gray-700"
+                                            ? "text-brand"
+                                            : "text-[var(--text-secondary)]"
                                         }`}
                                       >
                                         {status ===
@@ -1969,10 +1956,10 @@ const socket = io(API_URL, {
                                 return (
                                   <div
                                     key={`${item.name}-${index}`}
-                                    className={`flex items-center gap-3 rounded-2xl border p-2.5 transition-all ${
+                                    className={`flex items-center gap-3 rounded-2xl border p-3 transition-all duration-200 ${
                                       itemCancelled
-                                        ? "border-[var(--border)] bg-[var(--surface)] opacity-55"
-                                        : "border-[var(--border)] bg-[var(--surface)]"
+                                        ? "border-[var(--border)] bg-[var(--surface-secondary)] opacity-75"
+                                        : "border-[var(--border)] bg-[var(--surface)] hover:border-brand/40"
                                     }`}
                                   >
                                     {/* Item image */}
@@ -1998,8 +1985,8 @@ const socket = io(API_URL, {
                                           <UtensilsCrossed
                                             className={`h-5 w-5 ${
                                               itemCancelled
-                                                ? "text-gray-800"
-                                                : "text-gray-700"
+                                                ? "text-[var(--text-secondary)]"
+                                                : "text-[var(--text-secondary)]"
                                             }`}
                                           />
                                         </div>
@@ -2011,8 +1998,8 @@ const socket = io(API_URL, {
                                       <div
                                         className={`truncate text-xs font-bold sm:text-sm ${
                                           itemCancelled
-                                            ? "text-gray-600 line-through"
-                                            : "text-white"
+                                            ? "text-[var(--text-secondary)] line-through"
+                                            : "text-[var(--text-primary)]"
                                         }`}
                                       >
                                         {
@@ -2023,8 +2010,8 @@ const socket = io(API_URL, {
                                       <div
                                         className={`mt-1 text-[10px] sm:text-xs ${
                                           itemCancelled
-                                            ? "text-gray-800"
-                                            : "text-gray-600"
+                                            ? "text-[var(--text-secondary)]"
+                                            : "text-[var(--text-secondary)]"
                                         }`}
                                       >
                                         Qty{" "}
@@ -2034,7 +2021,7 @@ const socket = io(API_URL, {
                                       </div>
 
                                       {itemCancelled && (
-                                        <div className="mt-1 flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide text-gray-700 sm:text-[10px]">
+                                        <div className="mt-1 flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide text-red-600 sm:text-[10px]">
                                           <XCircle className="h-3 w-3" />
                                           Cancelled
                                         </div>
@@ -2044,7 +2031,7 @@ const socket = io(API_URL, {
                                         getItemCancellationReason(
                                           item
                                         ) && (
-                                          <div className="mt-1 truncate text-[9px] text-gray-800">
+                                          <div className="mt-1 truncate text-[9px] text-[var(--text-secondary)]">
                                             {
                                               getItemCancellationReason(
                                                 item
@@ -2059,7 +2046,7 @@ const socket = io(API_URL, {
                                       <div
                                         className={`text-xs font-bold sm:text-sm ${
                                           itemCancelled
-                                            ? "text-gray-700 line-through"
+                                            ? "text-[var(--text-secondary)] line-through"
                                             : "text-brand"
                                         }`}
                                       >
@@ -2079,7 +2066,7 @@ const socket = io(API_URL, {
                                       </div>
 
                                       {itemCancelled && (
-                                        <div className="mt-1 text-[9px] font-bold text-gray-700">
+                                        <div className="mt-1 text-[9px] font-bold text-red-600">
                                           Cancelled
                                         </div>
                                       )}
@@ -2105,7 +2092,7 @@ const socket = io(API_URL, {
           {cancelledItemCount > 0 &&
             !order.cancelled && (
               <div className="mt-6 rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-center">
-                <div className="text-xs font-bold text-gray-500">
+                <div className="text-xs font-bold text-[var(--text-secondary)]">
                   {cancelledItemCount} item
                   {cancelledItemCount !==
                   1
@@ -2114,7 +2101,7 @@ const socket = io(API_URL, {
                   cancelled
                 </div>
 
-                <div className="mt-1 text-[10px] text-gray-700">
+                <div className="mt-1 text-[10px] text-[var(--text-secondary)]">
                   Other active items continue to be prepared normally.
                 </div>
               </div>
@@ -2124,11 +2111,11 @@ const socket = io(API_URL, {
               LIVE STATUS
           ===================================================== */}
 
-          <div className="mt-6 flex items-center justify-center gap-2 pb-2 text-[10px] text-gray-600 sm:text-xs">
+          <div className="mt-6 flex items-center justify-center gap-2 pb-2 text-[10px] text-[var(--text-secondary)] sm:text-xs">
             <span
               className={`h-1.5 w-1.5 rounded-full ${
                 order.cancelled
-                  ? "bg-gray-700"
+                  ? "bg-[var(--text-secondary)]"
                   : "animate-pulse bg-emerald-500"
               }`}
             />

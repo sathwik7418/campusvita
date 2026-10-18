@@ -1,17 +1,27 @@
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+
 export function getImageUrl(image: string) {
-  if (!image) {
+  if (!image?.trim()) {
     return "";
   }
 
-  // Already an absolute URL
-  if (
-    image.startsWith("http://") ||
-    image.startsWith("https://")
-  ) {
-    return image;
+  const value = image.trim();
+
+  // Preserve absolute image URLs.
+  if (/^https?:\/\//i.test(value)) {
+    return value;
   }
 
-  // Local public path (served by Next.js directly)
-  const normalizedPath = image.startsWith("/") ? image : `/${image}`;
+  // Uploaded images are served by FastAPI, not Next.js.
+  const normalizedPath = value.startsWith("/")
+    ? value
+    : `/${value}`;
+
+  if (normalizedPath.startsWith("/uploads/")) {
+    return `${API_URL.replace(/\/+$/, "")}${normalizedPath}`;
+  }
+
+  // Preserve local Next.js public assets.
   return normalizedPath;
 }

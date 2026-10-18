@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 
 import { useRouter } from "next/navigation";
+import { useTheme } from "next-themes";
 
 import { TelegramHeader } from "@/components/ui/telegram-profile-header";
 
@@ -37,8 +38,6 @@ import {
   SESSION_KEYS,
   type SessionUser,
 } from "@/app/lib/auth/session";
-
-type Theme = "light" | "dark";
 
 type ApiError = {
   detail?: string | Array<{ msg?: string }>;
@@ -66,8 +65,8 @@ export default function VendorProfilePage() {
 
   const profileImageInputRef = useRef<HTMLInputElement>(null);
 
-  // Theme
-  const [theme, setTheme] = useState<Theme>("dark");
+  // Account-specific theme from the shared theme provider.
+  const { resolvedTheme, setTheme } = useTheme();
 
   // Change password dialog
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
@@ -83,7 +82,7 @@ export default function VendorProfilePage() {
   const [passwordMessage, setPasswordMessage] = useState("");
   const [passwordError, setPasswordError] = useState("");
 
-  const isDark = theme === "dark";
+  const isDark = resolvedTheme === "dark";
 
   const apiUrl =
     process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
@@ -283,21 +282,7 @@ export default function VendorProfilePage() {
   // ============================================================
 
   const handleThemeToggle = () => {
-    const nextTheme: Theme = isDark ? "light" : "dark";
-
-    setTheme(nextTheme);
-
-    localStorage.setItem("theme", nextTheme);
-
-    document.documentElement.classList.toggle(
-      "dark",
-      nextTheme === "dark",
-    );
-
-    document.documentElement.style.colorScheme = nextTheme;
-
-    document.body.style.backgroundColor =
-      nextTheme === "dark" ? "#090909" : "#f8fafc";
+    setTheme(isDark ? "light" : "dark");
   };
 
   // ============================================================
@@ -806,7 +791,7 @@ export default function VendorProfilePage() {
                 onToggleVisibility={() =>
                   setShowCurrentPassword((value) => !value)
                 }
-                theme={theme}
+                theme={isDark ? "dark" : "light"}
                 autoComplete="current-password"
               />
 
@@ -819,7 +804,7 @@ export default function VendorProfilePage() {
                 onToggleVisibility={() =>
                   setShowNewPassword((value) => !value)
                 }
-                theme={theme}
+                theme={isDark ? "dark" : "light"}
                 autoComplete="new-password"
                 minLength={8}
               />
@@ -833,7 +818,7 @@ export default function VendorProfilePage() {
                 onToggleVisibility={() =>
                   setShowConfirmPassword((value) => !value)
                 }
-                theme={theme}
+                theme={isDark ? "dark" : "light"}
                 autoComplete="new-password"
                 minLength={8}
               />
@@ -970,7 +955,7 @@ function PasswordField({
   onChange: (value: string) => void;
   visible: boolean;
   onToggleVisibility: () => void;
-  theme: Theme;
+  theme: "light" | "dark";
   autoComplete: string;
   minLength?: number;
 }) {

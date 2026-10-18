@@ -31,6 +31,7 @@ import {
   X,
 } from "lucide-react";
 
+import { TelegramHeader } from "@/components/ui/telegram-profile-header";
 import { getImageUrl } from "@/app/lib/getImageUrl";
 import {
   getAccessToken,
@@ -785,169 +786,109 @@ export default function ProfilePage() {
         )}
 
         {/* ======================================================
-            PROFILE HERO
+            PROFILE HERO — ANIMATED TELEGRAM-STYLE HEADER
         ====================================================== */}
 
         <section
           className="
-            overflow-hidden rounded-[28px]
+            relative overflow-hidden rounded-[28px]
             border border-[var(--border)]
             bg-[var(--surface)]
             shadow-[var(--shadow-card)]
           "
         >
+          <div className="relative">
+            <TelegramHeader
+              avatar={
+                profile.profile_image
+                  ? getImageUrl(profile.profile_image)
+                  : ""
+              }
+              name={profile.name || "Not added"}
+              phone={profile.phone || "Phone number not added"}
+              username={profile.email || "Email not available"}
+              actionButton={{
+                text: "Edit",
+                onClick: () => openEdit(),
+                backgroundColor: "var(--brand)",
+              }}
+            />
 
-          <div className="h-24 bg-[var(--surface-secondary)] sm:h-28" />
-
-          <div className="relative px-5 pb-5 sm:px-7 sm:pb-7">
-
-            <div className="-mt-14 flex flex-col gap-5 sm:-mt-16 sm:flex-row sm:items-end">
-
-              {/* Avatar */}
-
-              <div className="relative shrink-0 self-start">
-
-                <div
+            {/* Existing profile verification status */}
+            {profile.is_verified && (
+              <div className="flex justify-center px-4 pb-3">
+                <span
                   className="
-                    h-28 w-28 rounded-full
-                    border-4 border-[var(--surface)]
-                    bg-[var(--surface-secondary)]
-                    p-1
-                    shadow-lg
-                    sm:h-32 sm:w-32
-                  "
-                >
-                  {profile.profile_image ? (
-                    <img
-                      src={getImageUrl(
-                        profile.profile_image
-                      )}
-                      alt="Profile photo"
-                      className="h-full w-full rounded-full object-cover"
-                    />
-                  ) : (
-                    <div
-                      className="
-                        flex h-full w-full
-                        items-center justify-center
-                        rounded-full
-                        bg-[var(--brand-soft)]
-                        text-3xl font-extrabold
-                        text-[var(--brand)]
-                      "
-                    >
-                      {initials}
-                    </div>
-                  )}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    fileRef.current?.click()
-                  }
-                  disabled={uploading}
-                  aria-label="Change profile photo"
-                  className="
-                    absolute bottom-0 right-0
-                    flex h-10 w-10 items-center justify-center
+                    inline-flex items-center gap-1.5
                     rounded-full
-                    bg-[var(--brand)]
-                    text-white
-                    shadow-lg
-                    transition
-                    hover:brightness-95
-                    active:scale-90
-                    disabled:opacity-60
-                    focus:outline-none
-                    focus:ring-2
-                    focus:ring-[var(--brand)]
-                    focus:ring-offset-2
-                    focus:ring-offset-[var(--surface)]
-                  "
-                >
-                  {uploading ? (
-                    <RefreshCw
-                      size={18}
-                      className="animate-spin"
-                    />
-                  ) : (
-                    <Camera size={18} />
-                  )}
-                </button>
-
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  onChange={uploadImage}
-                  className="hidden"
-                />
-
-              </div>
-
-              {/* User information */}
-
-              <div className="min-w-0 flex-1">
-
-                <div className="flex flex-wrap items-center gap-2">
-
-                  <h2 className="truncate text-2xl font-extrabold tracking-tight">
-                    {profile.name || "Not added"}
-                  </h2>
-
-                  {profile.is_verified && (
-                    <span
-                      className="
-                        inline-flex items-center gap-1
-                        rounded-full
-                        bg-[var(--brand-soft)]
-                        px-2.5 py-1
-                        text-[11px] font-bold
-                        text-[var(--brand)]
-                      "
-                    >
-                      <CheckCircle2 size={13} />
-                      Verified
-                    </span>
-                  )}
-
-                </div>
-
-                <p className="mt-2 flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-                  <Phone size={16} />
-                  {profile.phone || "Phone number not added"}
-                </p>
-
-                <p className="mt-1 flex items-center gap-2 truncate text-sm text-[var(--text-muted)]">
-                  <Mail size={16} />
-                  {profile.email || "Email not available"}
-                </p>
-
-                <button
-                  type="button"
-                  onClick={() => openEdit()}
-                  className="
-                    mt-4 inline-flex items-center gap-2
-                    rounded-xl
-                    border border-[var(--border)]
-                    bg-[var(--surface-secondary)]
-                    px-4 py-2.5
+                    bg-[var(--brand-soft)]
+                    px-3 py-1.5
                     text-xs font-bold
-                    text-[var(--text-primary)]
-                    transition
-                    hover:border-[var(--brand)]
-                    hover:bg-[var(--brand-soft)]
-                    hover:text-[var(--brand)]
-                    active:scale-95
+                    text-[var(--brand)]
                   "
                 >
-                  <Pencil size={14} />
-                  Edit Profile
-                </button>
-
+                  <CheckCircle2 size={14} />
+                  Verified account
+                </span>
               </div>
+            )}
+
+            {/* Existing profile photo upload — retained */}
+            <div className="flex flex-wrap items-center justify-center gap-3 border-t border-[var(--border)] px-4 py-4 sm:px-6">
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={uploadImage}
+                className="hidden"
+              />
+
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                disabled={uploading}
+                aria-label="Change profile photo"
+                className="
+                  inline-flex min-h-10 items-center justify-center gap-2
+                  rounded-xl border border-[var(--border)]
+                  bg-[var(--surface-secondary)]
+                  px-4 py-2.5
+                  text-sm font-semibold text-[var(--text-primary)]
+                  transition hover:border-[var(--brand)]
+                  hover:bg-[var(--brand-soft)]
+                  hover:text-[var(--brand)]
+                  active:scale-[0.98]
+                  disabled:cursor-not-allowed disabled:opacity-60
+                  focus:outline-none focus:ring-2
+                  focus:ring-[var(--brand)]
+                "
+              >
+                {uploading ? (
+                  <RefreshCw size={16} className="animate-spin" />
+                ) : (
+                  <Camera size={16} />
+                )}
+                {uploading ? "Uploading photo…" : "Change profile photo"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => openEdit()}
+                className="
+                  inline-flex min-h-10 items-center justify-center gap-2
+                  rounded-xl bg-[var(--brand)]
+                  px-4 py-2.5 text-sm font-semibold text-white
+                  transition hover:brightness-95 active:scale-[0.98]
+                  focus:outline-none focus:ring-2
+                  focus:ring-[var(--brand)]
+                  focus:ring-offset-2
+                  focus:ring-offset-[var(--surface)]
+                "
+              >
+                <Pencil size={15} />
+                Edit profile details
+              </button>
             </div>
           </div>
         </section>

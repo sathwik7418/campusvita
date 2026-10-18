@@ -1,6 +1,7 @@
 "use client";
 
 import { Minus, Plus, UtensilsCrossed } from "lucide-react";
+import { HeartFavorite } from "@/components/ui/heart-favorite-shadcnui";
 import { getImageUrl } from "@/app/lib/getImageUrl";
 
 type Props = {
@@ -34,14 +35,16 @@ export default function FoodCard({
         overflow-hidden
         rounded-2xl
         transition-all
-        duration-200
+        duration-300
+        ease-out
         hover:-translate-y-0.5
         hover:shadow-[var(--shadow-card)]
+        motion-reduce:transition-none
       "
     >
       {/* IMAGE */}
 
-      <div className="relative aspect-[4/3] overflow-hidden bg-[var(--surface-secondary)]">
+      <div className="relative aspect-[5/4] overflow-hidden bg-[var(--surface-secondary)]">
 
         {image ? (
           <img
@@ -91,10 +94,15 @@ export default function FoodCard({
           />
         </div>
 
+
+
         {/* VEG INDICATOR */}
 
         {isVeg !== null && (
-          <div className="absolute left-2.5 top-2.5 flex h-5 w-5 items-center justify-center rounded-md bg-white/95 shadow-sm dark:bg-black/85">
+          <div
+          className="absolute left-2.5 top-2.5 flex h-6 w-6 items-center justify-center rounded-lg border border-black/5 bg-white/95 shadow-sm backdrop-blur-sm dark:border-white/10 dark:bg-black/85"
+          title={isVeg ? "Vegetarian" : "Non-vegetarian"}
+        >
             <span
               className={`
                 h-2.5
@@ -119,7 +127,11 @@ export default function FoodCard({
 
       {/* CONTENT */}
 
-      <div className="p-3">
+      <div className="p-3 sm:p-3.5">
+
+        <div className="-mt-1 mb-1 flex justify-end">
+          <HeartFavorite foodName={name} />
+        </div>
 
         <h3 className="line-clamp-2 min-h-[40px] text-sm font-bold leading-5 tracking-[-0.01em] text-[var(--text-primary)] sm:text-[15px]">
           {name}
@@ -127,7 +139,7 @@ export default function FoodCard({
 
         <div className="mt-3 flex items-center justify-between gap-2">
 
-          <span className="cv-tnum text-[15px] font-bold text-[var(--text-primary)]">
+          <span className="cv-tnum text-[15px] font-extrabold tracking-tight text-[var(--text-primary)]">
             ₹{price}
           </span>
 
@@ -200,27 +212,29 @@ export default function FoodCard({
               onClick={onAddToCart}
               aria-label={`Add ${name} to cart`}
               className="
-                cv-press
-                flex
-                h-9
-                min-w-9
-                items-center
-                justify-center
-                rounded-full
-                border
-                border-transparent
-                bg-[var(--accent)]
-                px-2.5
-                text-[var(--on-accent)]
-                shadow-[var(--accent-shadow)]
-                transition-all
-                hover:bg-[var(--accent-hover)]
-                active:scale-95
-                focus:outline-none
-                focus-visible:ring-2
-                focus-visible:ring-[var(--accent)]
-                focus-visible:ring-offset-2
-              "
+                  cv-press
+                  flex
+                  h-9
+                  min-w-9
+                  items-center
+                  justify-center
+                  rounded-full
+                  border
+                  border-transparent
+                  bg-[var(--accent)]
+                  px-2.5
+                  text-[var(--on-accent)]
+                  shadow-[var(--accent-shadow)]
+                  transition-all
+                  duration-200
+                  hover:bg-[var(--accent-hover)]
+                  active:scale-95
+                  focus:outline-none
+                  focus-visible:ring-2
+                  focus-visible:ring-[var(--accent)]
+                  focus-visible:ring-offset-2
+                  motion-reduce:transition-none
+                "
             >
               <Plus
                 size={18}

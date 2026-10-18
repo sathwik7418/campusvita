@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import jwt
 import pytest
@@ -110,6 +110,158 @@ def test_cart_summary_passes_stall_identity_to_authoritative_pricer(
     passed_items = calculate.call_args.args[0]
     assert passed_items[0].stall_id == "stall-a"
     assert passed_items[0].quantity == 1
+
+
+def test_wallet_checkout_uses_same_authoritative_total_as_cart(
+    backend_module,
+):
+    order_id = "order-wallet-test"
+    bill = {
+        "items": [
+            {
+                "name": "Rice",
+                "stall_id": "stall-a",
+                "price": 100.0,
+                "quantity": 1,
+            }
+        ],
+        "subtotal": 100.0,
+        "delivery_fee": 15.0,
+        "tax_amount": 10.0,
+        "discount": 0.0,
+        "total": 125.0,
+    }
+    users = MagicMock()
+    users.find_one.return_value = {"wallet": 500.0}
+    users.update_one.return_value = SimpleNamespace(modified_count=1)
+    orders = MagicMock()
+    orders.insert_one.return_value = SimpleNamespace(inserted_id=order_id)
+    orders.find_one.return_value = {"order_id": order_id, "total": 125.0}
+    payments = MagicMock()
+
+    request = backend_module.CreateFoodOrderData(
+        items=[
+            backend_module.OrderItemRequest(
+                name="Rice",
+                quantity=1,
+                stall_id="stall-a",
+            )
+        ],
+        name="Student",
+        phone="9876543210",
+    )
+
+    with (
+        patch.object(
+            backend_module,
+            "calculate_food_order_bill",
+            return_value=bill,
+        ) as calculate,
+        patch.object(backend_module, "users_collection", users),
+        patch.object(backend_module, "orders_collection", orders),
+        patch.object(backend_module, "payments_collection", payments),
+        patch.object(backend_module, "get_next_token", return_value=123),
+        patch.object(backend_module, "safe_emit_order_update", new_callable=AsyncMock),
+        patch.object(backend_module.threading, "Thread"),
+    ):
+        result = run_immediate(
+            backend_module.pay_order_with_wallet(
+                request,
+                {"email": "student@example.com", "role": "USER"},
+            )
+        )
+
+    assert result["amount_paid"] == bill["total"]
+    assert result["order"]["total"] == bill["total"]
+    assert calculate.call_count == 1
+    saved_order = orders.insert_one.call_args.args[0]
+    assert saved_order["stall_orders"][0]["stall_id"] == "stall-a"
+    assert (
+        saved_order["stall_orders"][0]["status"]
+        == backend_module.StallOrderStatus.PENDING
+    )
+    wallet_query, wallet_update = users.update_one.call_args.args
+    assert wallet_query["wallet"]["$gte"] == bill["total"]
+    assert wallet_update["$inc"]["wallet"] == -bill["total"]
+    assert saved_order["billing"] == {
+        key: bill[key]
+        for key in (
+            "subtotal",
+            "delivery_fee",
+            "tax_amount",
+            "discount",
+            "total",
+        )
+    }
+
+
+def test_online_payment_order_persists_per_stall_state(backend_module):
+    order_id = "order-online-test"
+    intent = {
+        "email": "student@example.com",
+        "razorpay_order_id": "razorpay-order-1",
+        "items": [
+            {
+                "name": "Rice",
+                "price": 100.0,
+                "quantity": 1,
+                "stall_id": "stall-a",
+            }
+        ],
+        "total": 125.0,
+        "billing": {
+            "subtotal": 100.0,
+            "delivery_fee": 15.0,
+            "tax_amount": 10.0,
+            "discount": 0.0,
+            "total": 125.0,
+        },
+        "name": "Student",
+        "phone": "9876543210",
+    }
+    orders = MagicMock()
+    orders.insert_one.return_value = SimpleNamespace(inserted_id=order_id)
+    orders.find_one.return_value = {
+        "order_id": order_id,
+        "token": 123,
+        "total": 125.0,
+    }
+    payments = MagicMock()
+    payments.find_one.return_value = None
+    request = backend_module.VerifyPaymentData(
+        razorpay_payment_id="payment-1",
+        razorpay_order_id="razorpay-order-1",
+        razorpay_signature="signature",
+        order_intent="signed-intent",
+    )
+
+    with (
+        patch.object(backend_module, "decode_signed_intent", return_value=intent),
+        patch.object(backend_module, "orders_collection", orders),
+        patch.object(backend_module, "payments_collection", payments),
+        patch.object(backend_module, "users_collection", MagicMock()),
+        patch.object(backend_module, "get_next_token", return_value=123),
+        patch.object(backend_module, "safe_emit_order_update", new_callable=AsyncMock),
+        patch.object(backend_module.threading, "Thread"),
+        patch.object(
+            backend_module.razorpay_client.utility,
+            "verify_payment_signature",
+        ),
+    ):
+        result = run_immediate(
+            backend_module.verify_payment(
+                request,
+                {"email": "student@example.com", "role": "USER"},
+            )
+        )
+
+    saved_order = orders.insert_one.call_args.args[0]
+    assert result["success"] is True
+    assert saved_order["stall_orders"][0]["stall_id"] == "stall-a"
+    assert (
+        saved_order["stall_orders"][0]["status"]
+        == backend_module.StallOrderStatus.PENDING
+    )
 
 
 def test_duplicate_online_payment_stops_before_provider_or_order_write(

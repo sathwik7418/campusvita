@@ -1,6 +1,7 @@
 "use client";
 
 import { startTransition, useEffect, useMemo, useState } from "react";
+import { useTheme } from "next-themes";
 import {
   AlertTriangle,
   Check,
@@ -324,62 +325,11 @@ export default function VendorDashboardPage() {
   // THEME
   // ============================================================
 
-  const [isDark, setIsDark] = useState(true);
-
-  useEffect(() => {
-    const savedTheme = localStorage.getItem("theme");
-
-    let dark = true;
-
-    if (savedTheme === "light") {
-      dark = false;
-    } else if (savedTheme === "dark") {
-      dark = true;
-    } else {
-      dark = window.matchMedia(
-        "(prefers-color-scheme: dark)"
-      ).matches;
-    }
-
-    startTransition(() => {
-      setIsDark(dark);
-    });
-
-    document.documentElement.classList.toggle("dark", dark);
-
-    document.documentElement.style.colorScheme = dark
-      ? "dark"
-      : "light";
-
-    document.body.style.backgroundColor = dark
-      ? "#303746"
-      : "#e6e7eb";
-  }, []);
+  const { resolvedTheme, setTheme } = useTheme();
+  const isDark = resolvedTheme === "dark";
 
   const toggleTheme = () => {
-    setIsDark((current) => {
-      const next = !current;
-
-      localStorage.setItem(
-        "theme",
-        next ? "dark" : "light"
-      );
-
-      document.documentElement.classList.toggle(
-        "dark",
-        next
-      );
-
-      document.documentElement.style.colorScheme = next
-        ? "dark"
-        : "light";
-
-      document.body.style.backgroundColor = next
-        ? "#303746"
-        : "#e6e7eb";
-
-      return next;
-    });
+    setTheme(isDark ? "light" : "dark");
   };
 
   // ============================================================

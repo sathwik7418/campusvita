@@ -5,7 +5,8 @@ import {
   type UserRole,
 } from "@/app/lib/auth/session";
 
-const API_URL = "http://127.0.0.1:8000";
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 // ============================================================
 // CENTRAL AUTHENTICATED FETCH
