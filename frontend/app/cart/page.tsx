@@ -838,10 +838,8 @@ export default function CartPage() {
                   quantity: Number(item.quantity),
                   stall_id: item.stall_id,
                 })),
-                name:
-                  profile.name,
-                phone:
-                  profile.phone,
+                name: profile.name,
+                phone: profile.phone,
               }),
             }
           );
@@ -1020,6 +1018,40 @@ export default function CartPage() {
           return;
         }
 
+        const checkoutPayload = {
+          items: items.map(item => ({
+            name: item.name,
+            quantity: Number(item.quantity),
+            stall_id: item.stall_id,
+          })),
+          name: profile.name,
+          phone: profile.phone,
+        };
+        const checkoutFingerprint = JSON.stringify(checkoutPayload);
+        const savedCheckout = localStorage.getItem(
+          "campusvita-wallet-checkout"
+        );
+        let idempotencyKey: string;
+        try {
+          const parsed = savedCheckout
+            ? JSON.parse(savedCheckout)
+            : null;
+          idempotencyKey =
+            parsed?.fingerprint === checkoutFingerprint &&
+            typeof parsed?.key === "string"
+              ? parsed.key
+              : crypto.randomUUID();
+        } catch {
+          idempotencyKey = crypto.randomUUID();
+        }
+        localStorage.setItem(
+          "campusvita-wallet-checkout",
+          JSON.stringify({
+            fingerprint: checkoutFingerprint,
+            key: idempotencyKey,
+          })
+        );
+
         const response =
           await fetch(
             `${API_URL}/wallet/pay-order`,
@@ -1032,15 +1064,8 @@ export default function CartPage() {
                   `Bearer ${token}`,
               },
               body: JSON.stringify({
-                items: items.map(item => ({
-                  name: item.name,
-                  quantity: Number(item.quantity),
-                  stall_id: item.stall_id,
-                })),
-                name:
-                  profile.name,
-                phone:
-                  profile.phone,
+                ...checkoutPayload,
+                idempotency_key: idempotencyKey,
               }),
             }
           );
@@ -1091,6 +1116,9 @@ export default function CartPage() {
         );
 
         clearCart();
+        localStorage.removeItem(
+          "campusvita-wallet-checkout"
+        );
 
         setPaymentSheetOpen(
           false

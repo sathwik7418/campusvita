@@ -4,10 +4,8 @@
 from websocket_manager import manager
 import os
 import re
-import time
 import random
 import asyncio
-import threading
 import logging
 import hmac
 import hashlib
@@ -1232,6 +1230,138 @@ def ensure_refund_eligible_order(
         )
 
 
+def vendor_cancellation_snapshot_filter(order: Dict[str, Any]) -> Dict[str, Any]:
+    """Build an exact persisted-state predicate for a cancellation CAS."""
+    query: Dict[str, Any] = {
+        "_id": order["_id"],
+        "items": order.get("items", []),
+        "payment_status": PaymentStatus.PAID,
+        "status": order.get("status"),
+    }
+    if "stall_orders" in order:
+        query["stall_orders"] = order["stall_orders"]
+    else:
+        query["stall_orders"] = {"$exists": False}
+    return query
+
+
+def apply_vendor_cancellation(
+    order: Dict[str, Any],
+    *,
+    stall_id: str,
+    item_indexes: List[int],
+    reason: str,
+    cancellation_time: datetime,
+    item_timestamp_key: str,
+    item_reason_key: str,
+) -> Dict[str, Any]:
+    """Apply a vendor cancellation only if its complete source snapshot is current.
+
+    The full item/stall arrays are retained for the existing document/API
+    shape, but are never written from a stale read: Mongo must still match
+    both arrays and the aggregate status observed by this request.
+    """
+    if order.get("payment_status") != PaymentStatus.PAID:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only paid orders can be cancelled by a vendor.",
+        )
+    if order.get("status") == OrderStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Completed orders cannot be cancelled.",
+        )
+
+    raw_stall_orders = order.get("stall_orders")
+    if not isinstance(raw_stall_orders, list):
+        raw_stall_orders = []
+    stall_state = next(
+        (entry for entry in raw_stall_orders if str(entry.get("stall_id")) == stall_id),
+        None,
+    )
+    if stall_state is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The persisted stall fulfillment state is unavailable; cancellation is unsafe.",
+        )
+    if stall_state and (
+        stall_state.get("picked_up") is True
+        or stall_state.get("status") == StallOrderStatus.CANCELLED
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This stall order is already fulfilled or cancelled.",
+        )
+    if stall_state and stall_state.get("status") != StallOrderStatus.PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This stall order can no longer be cancelled after acceptance.",
+        )
+
+    now_text = cancellation_time.isoformat()
+    items = [dict(entry) for entry in order.get("items", [])]
+    for index in item_indexes:
+        items[index]["cancelled"] = True
+        items[index][item_timestamp_key] = now_text
+        items[index][item_reason_key] = reason
+        items[index]["status"] = "Cancelled"
+
+    candidate = dict(order)
+    candidate["items"] = items
+    stall_orders = build_stall_orders(candidate)
+    active_for_stall = any(
+        str(entry.get("stall_id") or "") == stall_id
+        and not entry.get("cancelled")
+        for entry in items
+    )
+    if not active_for_stall:
+        for entry in stall_orders:
+            if entry["stall_id"] == stall_id:
+                entry["status"] = StallOrderStatus.CANCELLED
+                entry["cancelled"] = True
+                entry["cancelledAt"] = now_text
+                entry["cancellationReason"] = reason
+                break
+    candidate["stall_orders"] = stall_orders
+
+    has_active_items = any(not entry.get("cancelled") for entry in items)
+    update_fields: Dict[str, Any] = {
+        "items": items,
+        "stall_orders": stall_orders,
+        "cancelled": not has_active_items,
+        "status": aggregate_order_status(candidate) if has_active_items else "Cancelled",
+    }
+    if not has_active_items:
+        update_fields.update({
+            "cancelled_at": now_text,
+            "cancellation_reason": reason,
+        })
+
+    result = orders_collection.update_one(
+        vendor_cancellation_snapshot_filter(order),
+        {"$set": update_fields},
+    )
+    if (
+        getattr(result, "matched_count", 0) != 1
+        or getattr(result, "modified_count", 0) != 1
+    ):
+        latest = orders_collection.find_one({"_id": order["_id"]})
+        if not latest:
+            raise HTTPException(status_code=404, detail="Order not found.")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Order changed during cancellation; refresh and retry.",
+        )
+
+    latest = orders_collection.find_one({"_id": order["_id"]})
+    if not latest:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Cancellation was recorded but the order could not be reloaded.",
+        )
+    return latest
+
+
 def get_stall_preparation_minutes(stall_id: str) -> int:
     """Get preparation time configured for a stall."""
     try:
@@ -1297,11 +1427,75 @@ def build_stall_orders(order: Dict[str, Any]) -> List[Dict[str, Any]]:
     "cookingStartedAt": previous.get("cookingStartedAt"),
     "readyAt": previous.get("readyAt"),
     "cancelled": bool(previous.get("cancelled", False)),
+    "picked_up": bool(previous.get("picked_up", False)),
+    "picked_up_at": previous.get("picked_up_at"),
     "cancelledAt": previous.get("cancelledAt"),
     "cancellationReason": previous.get("cancellationReason"),
 })
 
     return stall_orders
+
+
+def aggregate_order_status(order: Dict[str, Any]) -> str:
+    """Derive the customer-facing status from vendor-owned stall states."""
+    active = [
+        entry for entry in build_stall_orders(order)
+        if not entry.get("cancelled")
+    ]
+    if not active:
+        return OrderStatus.PREPARING
+    if all(entry.get("picked_up") for entry in active):
+        return OrderStatus.COMPLETED
+    if all(entry.get("status") == StallOrderStatus.READY for entry in active):
+        return OrderStatus.READY_FOR_PICKUP
+    if any(
+        entry.get("status") in {StallOrderStatus.COOKING, StallOrderStatus.READY}
+        for entry in active
+    ):
+        return OrderStatus.COOKING
+    return OrderStatus.PREPARING
+
+
+def persist_aggregate_order_status(order_id: Any) -> Optional[Dict[str, Any]]:
+    """CAS the denormalized order status until it reflects current stall state.
+
+    Vendor updates to different stalls can overlap. Comparing only against
+    ``status != COMPLETED`` allows an older request to overwrite a newer
+    aggregate (for example, READY back to COOKING). This bounded retry reads
+    the newest stall states and only writes if the observed aggregate has not
+    changed since that read.
+    """
+    for _attempt in range(5):
+        order = orders_collection.find_one({"_id": order_id})
+        if not order:
+            return None
+
+        current_status = order.get("status")
+        if current_status == OrderStatus.COMPLETED:
+            return order
+
+        derived_status = aggregate_order_status(order)
+        if current_status == derived_status:
+            return order
+
+        result = orders_collection.update_one(
+            {"_id": order_id, "status": current_status},
+            {"$set": {"status": derived_status}},
+        )
+        if getattr(result, "matched_count", 0) == 1:
+            # Re-read in the next iteration: another stall transition may
+            # have committed while this aggregate write was in flight.
+            continue
+
+    # Return the latest record only if it is now consistent; otherwise the
+    # caller reports a retryable conflict rather than claiming stale status.
+    order = orders_collection.find_one({"_id": order_id})
+    if order and (
+        order.get("status") == OrderStatus.COMPLETED
+        or order.get("status") == aggregate_order_status(order)
+    ):
+        return order
+    return None
 # =====================================
 # SIGNED "ORDER INTENT" HELPERS
 # Used to carry server-computed prices/amounts from order-creation time to
@@ -1476,7 +1670,6 @@ async def create_indexes():
             unique=True,
             sparse=True,
         )
-
         logger.info(
             "✅ Orders collection index created"
         )
@@ -1538,6 +1731,33 @@ async def create_indexes():
         logger.warning(
             f"⚠️ Index creation warning: {e}"
         )
+
+    # These are financial idempotency/concurrency boundaries. Unlike optional
+    # reporting indexes, failure must prevent the service from accepting
+    # payments that could otherwise create duplicate orders or ledger rows.
+    try:
+        orders_collection.create_index(
+            "razorpay_order_id",
+            unique=True,
+            sparse=True,
+        )
+        orders_collection.create_index(
+            [("email", ASCENDING), ("idempotency_key", ASCENDING)],
+            unique=True,
+            partialFilterExpression={"idempotency_key": {"$type": "string"}},
+        )
+        payments_collection.create_index("payment_id", unique=True)
+        payments_collection.create_index(
+            "razorpay_order_id",
+            unique=True,
+            sparse=True,
+        )
+    except Exception as e:
+        logger.critical(
+            "Required wallet checkout idempotency index could not be created: %s",
+            e,
+        )
+        raise
 
 
 # =====================================
@@ -2108,12 +2328,14 @@ class OrderItemRequest(BaseModel):
 
 class OrderData(BaseModel):
     items: List[OrderItemRequest] = Field(min_length=1)
+    idempotency_key: Optional[str] = Field(default=None, min_length=16, max_length=128)
 
 
 class CreateFoodOrderData(BaseModel):
     items: List[OrderItemRequest] = Field(min_length=1)
     name: str
     phone: str
+    idempotency_key: Optional[str] = Field(default=None, min_length=16, max_length=128)
 
 
 class VerifyPaymentData(BaseModel):
@@ -2363,133 +2585,58 @@ async def cancel_vendor_complete_order(
             detail="No items found for this stall in the order",
         )
 
-    # ---------------------------------------------------------
-    # 7. Cancel ONLY this stall's items
-    # ---------------------------------------------------------
-    cancelled_count = 0
-    cancellation_time = datetime.utcnow()
+    payment = _refund_payment_for_order(order)
+    ensure_refund_eligible_order(order, payment)
 
-    for index, item in target_items:
-        if str(item.get("stall_id", "")) != requested_stall_id:
-            continue
-
-        if item.get("cancelled") is True:
-            continue
-
-        item["cancelled"] = True
-        item["cancelled_at"] = cancellation_time.isoformat()
-        item["cancellation_reason"] = "Cancelled by vendor"
-        item["status"] = "Cancelled"
-
-        cancelled_count += 1
-
-    if cancelled_count == 0:
-        raise HTTPException(
-            status_code=400,
-            detail="All items for this stall are already cancelled",
+    # A previously confirmed cancellation may be retrying after a crash
+    # before refund-intent persistence. Rebuild the intent below from the
+    # authoritative cancelled items instead of mutating or notifying again.
+    target_indexes = [index for index, item in target_items]
+    cancelled_count = sum(bool(items[index].get("cancelled")) for index in target_indexes)
+    transition_applied = False
+    cancellation_time = datetime.now(timezone.utc)
+    if cancelled_count != len(target_indexes):
+        order = apply_vendor_cancellation(
+            order,
+            stall_id=requested_stall_id,
+            item_indexes=[index for index in target_indexes if not items[index].get("cancelled")],
+            reason="Cancelled by vendor",
+            cancellation_time=cancellation_time,
+            item_timestamp_key="cancelled_at",
+            item_reason_key="cancellation_reason",
         )
+        cancelled_count = len(target_indexes)
+        transition_applied = True
 
-    # ---------------------------------------------------------
-    # 8. Update ONLY the matching stall order
-    # ---------------------------------------------------------
-    stall_orders = build_stall_orders(order)
-
-    target_stall_found = False
-
-    for stall_order in stall_orders:
-        current_stall_id = str(
-            stall_order.get("stall_id", "")
-        )
-
-        if current_stall_id != requested_stall_id:
-            continue
-
-        target_stall_found = True
-
-        stall_order["status"] = StallOrderStatus.CANCELLED
-        stall_order["cancelledAt"] = (
-            cancellation_time.isoformat()
-        )
-        stall_order["cancellationReason"] = (
-            "Cancelled by vendor"
-        )
-
-    if not target_stall_found:
-        raise HTTPException(
-            status_code=404,
-            detail="Stall order not found",
-        )
-
-    # ---------------------------------------------------------
-    # 9. Save updated stall orders
-    # ---------------------------------------------------------
-    order["stall_orders"] = stall_orders
-
-    # ---------------------------------------------------------
-    # 10. Determine global order status
-    # ---------------------------------------------------------
     remaining_active_items = [
-        item
-        for item in items
-        if item.get("cancelled") is not True
+        item for item in order.get("items", []) if item.get("cancelled") is not True
     ]
-
-    if not remaining_active_items:
-        # All items from all stalls are cancelled.
-        order["status"] = "Cancelled"
-        order["cancelled"] = True
-        order["cancelled_at"] = (
-            cancellation_time.isoformat()
-        )
-        order["cancellation_reason"] = (
-            "All stall orders cancelled"
-        )
-    else:
-        # Other stall(s) still have active items.
-        order["cancelled"] = False
-
-        if str(order.get("status", "")).lower() in {
-            "cancelled",
-            "canceled",
-        }:
-            order["status"] = "Confirmed"
-
-    # ---------------------------------------------------------
-    # 11. Persist updated order
-    # ---------------------------------------------------------
-    orders_collection.update_one(
-        {"_id": order["_id"]},
-        {
-            "$set": {
-                "items": items,
-                "stall_orders": order["stall_orders"],
-                "status": order.get("status"),
-                "cancelled": order.get("cancelled", False),
-                "cancelled_at": order.get("cancelled_at"),
-                "cancellation_reason": order.get(
-                    "cancellation_reason"
-                ),
-            }
-        },
-    )
+    refund_idempotency_key = f"vendor-stall-{order['_id']}-{requested_stall_id}"
 
     # ---------------------------------------------------------
     # 12. Create the automatic refund request for this stall
     # ---------------------------------------------------------
-    payment = _refund_payment_for_order(order)
-
-    ensure_refund_eligible_order(order, payment)
-
-    refund_calculation = calculate_refund_amount_paise(
-        order,
-        payment,
-        stall_id=requested_stall_id,
+    existing_refund = refunds_collection.find_one(
+        {"idempotency_key": refund_idempotency_key}
     )
-
-    if refund_calculation["amount_paise"] > 0:
-        refund_idempotency_key = (
-            f"vendor-stall-{order['_id']}-{requested_stall_id}"
+    refund_id = None
+    if existing_refund:
+        if (
+            str(existing_refund.get("order_id")) != str(order["_id"])
+            or existing_refund.get("stall_id") != requested_stall_id
+            or existing_refund.get("payment_id") != payment.get("payment_id")
+        ):
+            raise HTTPException(status_code=409, detail="Refund key conflicts with another refund.")
+        refund_id = existing_refund.get("_id")
+        refund_calculation = None
+    else:
+        refund_calculation = calculate_refund_amount_paise(
+            order,
+            payment,
+            stall_id=requested_stall_id,
         )
+
+    if refund_calculation and refund_calculation["amount_paise"] > 0:
 
         refund_document = {
             "idempotency_key": refund_idempotency_key,
@@ -2531,14 +2678,19 @@ async def cancel_vendor_complete_order(
                 if existing_refund
                 else None
             )
+            if not refund_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Refund intent is being created; retry this cancellation.",
+                )
 
-        if refund_id:
-            try:
-                process_refund_record(refund_id)
-            except HTTPException:
-                # Cancellation remains successful; the refund record
-                # remains persisted for safe retry/reconciliation.
-                pass
+    if refund_id:
+        try:
+            process_refund_record(refund_id)
+        except HTTPException:
+            # Cancellation remains successful; the refund record
+            # remains persisted for safe retry/reconciliation.
+            pass
 
     # ---------------------------------------------------------
     # 13. Re-fetch latest order
@@ -2547,7 +2699,7 @@ async def cancel_vendor_complete_order(
         {"_id": order["_id"]}
     )
 
-    if updated_order:
+    if updated_order and transition_applied:
         updated_order["_id"] = str(
             updated_order["_id"]
         )
@@ -2593,9 +2745,7 @@ async def cancel_vendor_complete_order(
         "token": token,
         "stall_id": requested_stall_id,
         "cancelled_items": cancelled_count,
-        "global_order_cancelled": (
-            len(remaining_active_items) == 0
-        ),
+        "global_order_cancelled": len(remaining_active_items) == 0,
         "stall_orders": order.get(
             "stall_orders",
             [],
@@ -2650,6 +2800,11 @@ async def get_vendor_orders(
     today_revenue = 0.0
 
     for order in orders:
+
+        # A saga order is not visible to fulfillment until its payment ledger
+        # and final Paid marker have both been persisted.
+        if order.get("payment_status") == PaymentStatus.PENDING:
+            continue
 
         # --------------------------------------------------------
         # ONLY ITEMS BELONGING TO THIS VENDOR
@@ -2808,31 +2963,14 @@ async def cancel_vendor_order_item(
             detail="You do not own this order item.",
         )
 
+    payment = _refund_payment_for_order(order)
+    ensure_refund_eligible_order(order, payment)
+
     refund_idempotency_key = (
         f"vendor-item-{order['_id']}-{item_index}"
     )
 
-    if item.get("cancelled"):
-        existing_refund = refunds_collection.find_one(
-            {
-                "idempotency_key": refund_idempotency_key,
-            }
-        )
-
-        if existing_refund:
-            return {
-                "success": True,
-                "duplicate": True,
-                "message": "This item was already cancelled and its refund request already exists.",
-                "refund": serialize_refund_response(existing_refund),
-            }
-
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This item is already cancelled.",
-        )
-
-    if order.get("cancelled"):
+    if order.get("cancelled") and not item.get("cancelled"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="The complete order is already cancelled.",
@@ -2844,81 +2982,46 @@ async def cancel_vendor_order_item(
     )
 
     now = datetime.now().isoformat()
+    transition_applied = not bool(item.get("cancelled"))
+    if transition_applied:
+        order = apply_vendor_cancellation(
+            order,
+            stall_id=stall_id,
+            item_indexes=[item_index],
+            reason=reason,
+            cancellation_time=datetime.fromisoformat(now),
+            item_timestamp_key="cancelledAt",
+            item_reason_key="cancellationReason",
+        )
+        items = order.get("items", [])
+        item = items[item_index]
 
-    # -----------------------------------------------------
-    # Cancel only this specific item
-    # -----------------------------------------------------
-    item["cancelled"] = True
-    item["cancelledAt"] = now
-    item["cancellationReason"] = reason
-
-    # -----------------------------------------------------
-    # Rebuild stall-specific order states
-    # -----------------------------------------------------
-    stall_orders = build_stall_orders(order)
-
-    stall_has_active_items = any(
-        str(order_item.get("stall_id") or "") == stall_id
-        and not order_item.get("cancelled")
-        for order_item in items
+    existing_refund = refunds_collection.find_one(
+        {"idempotency_key": refund_idempotency_key}
     )
-
-    for stall_order in stall_orders:
-        if stall_order["stall_id"] != stall_id:
-            continue
-
-        if not stall_has_active_items:
-            stall_order["status"] = StallOrderStatus.CANCELLED
-            stall_order["cancelled"] = True
-            stall_order["cancelledAt"] = now
-            stall_order["cancellationReason"] = reason
-
-        break
-
-    # -----------------------------------------------------
-    # Check whether every item in the complete order
-    # has been cancelled
-    # -----------------------------------------------------
-    all_items_cancelled = all(
-        order_item.get("cancelled") is True
-        for order_item in items
-    )
-
-    update_fields = {
-        "items": items,
-        "stall_orders": stall_orders,
-    }
-
-    # Only mark the complete order cancelled when
-    # every item from every stall has been cancelled.
-    if all_items_cancelled:
-        update_fields.update({
-            "cancelled": True,
-            "cancelledAt": now,
-            "cancellationReason": reason,
-            "status": "Cancelled",
-        })
-
-    orders_collection.update_one(
-        {"_id": order["_id"]},
-        {"$set": update_fields},
-    )
+    if existing_refund:
+        if (
+            str(existing_refund.get("order_id")) != str(order["_id"])
+            or existing_refund.get("stall_id") != stall_id
+            or existing_refund.get("item_index") != item_index
+            or existing_refund.get("payment_id") != payment.get("payment_id")
+        ):
+            raise HTTPException(status_code=409, detail="Refund key conflicts with another refund.")
+        refund_id = existing_refund.get("_id")
+        refund_calculation = None
+    else:
+        refund_id = None
+        refund_calculation = calculate_refund_amount_paise(
+            order,
+            payment,
+            stall_id=stall_id,
+            item_index=item_index,
+        )
 
     # -----------------------------------------------------
     # Automatic partial refund for this cancelled item
     # -----------------------------------------------------
-    payment = _refund_payment_for_order(order)
-
-    ensure_refund_eligible_order(order, payment)
-
-    refund_calculation = calculate_refund_amount_paise(
-        order,
-        payment,
-        stall_id=stall_id,
-        item_index=item_index,
-    )
-
-    if refund_calculation["amount_paise"] > 0:
+    if refund_calculation and refund_calculation["amount_paise"] > 0:
         refund_document = {
             "idempotency_key": refund_idempotency_key,
             "order_id": refund_calculation["order_id"],
@@ -2959,14 +3062,19 @@ async def cancel_vendor_order_item(
                 if existing_refund
                 else None
             )
+            if not refund_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Refund intent is being created; retry this cancellation.",
+                )
 
-        if refund_id:
-            try:
-                process_refund_record(refund_id)
-            except HTTPException:
-                # Cancellation remains successful. The refund record
-                # remains persisted for safe retry/reconciliation.
-                pass
+    if refund_id:
+        try:
+            process_refund_record(refund_id)
+        except HTTPException:
+            # Cancellation remains successful. The refund record
+            # remains persisted for safe retry/reconciliation.
+            pass
 
     # -----------------------------------------------------
     # Reload updated order
@@ -2984,14 +3092,15 @@ async def cancel_vendor_order_item(
     # -----------------------------------------------------
     # Send realtime WebSocket update
     # -----------------------------------------------------
-    await safe_emit_order_update(updated_order)
+    if transition_applied:
+        await safe_emit_order_update(updated_order)
 
     # -----------------------------------------------------
     # Send FCM push notification to the order owner
     # -----------------------------------------------------
     user_email = order.get("email") or order.get("user_email")
 
-    if user_email:
+    if user_email and transition_applied:
         normalized_email = normalize_email(str(user_email))
 
         order_user = users_collection.find_one(
@@ -3053,6 +3162,12 @@ async def update_vendor_stall_order_status(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Order not found.",
+        )
+
+    if order.get("payment_status") != PaymentStatus.PAID:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Vendors cannot fulfill an unpaid order.",
         )
 
     if stall_id not in set(
@@ -3176,14 +3291,11 @@ async def update_vendor_stall_order_status(
     # LOAD UPDATED ORDER
     # ============================================================
 
-    updated_order = orders_collection.find_one(
-        {"_id": order["_id"]}
-    )
-
+    updated_order = persist_aggregate_order_status(order["_id"])
     if not updated_order:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Updated order could not be loaded.",
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Concurrent order status updates are still settling; retry.",
         )
 
     # ============================================================
@@ -3247,6 +3359,12 @@ async def confirm_pickup(
             detail="Order not found.",
         )
 
+    if order.get("payment_status") != PaymentStatus.PAID:
+        raise HTTPException(
+            status_code=409,
+            detail="Pickup cannot be confirmed for an unpaid order.",
+        )
+
     stall_state = next(
         (
             entry
@@ -3281,53 +3399,97 @@ async def confirm_pickup(
             detail="Invalid pickup code.",
         )
 
-    if stall_state.get("picked_up"):
-        return {
-            "success": True,
-            "message": "Pickup already confirmed.",
-            "duplicate": True,
-        }
-
-    # Match the SAME stall's identity, readiness and pickup state.
-    result = orders_collection.update_one(
-        {
-            "_id": order["_id"],
-            "token": token,
-            "stall_orders": {
-                "$elemMatch": {
-                    "stall_id": stall_id,
-                    "status": StallOrderStatus.READY,
-                    "picked_up": {"$ne": True},
+    duplicate_pickup = bool(stall_state.get("picked_up"))
+    if not duplicate_pickup:
+        # Match the SAME stall's identity, readiness and pickup state.
+        result = orders_collection.update_one(
+            {
+                "_id": order["_id"],
+                "token": token,
+                "stall_orders": {
+                    "$elemMatch": {
+                        "stall_id": stall_id,
+                        "status": StallOrderStatus.READY,
+                        "picked_up": {"$ne": True},
+                    }
+                },
+            },
+            {
+                "$set": {
+                    "stall_orders.$.picked_up": True,
+                    "stall_orders.$.picked_up_at": datetime.now(
+                        timezone.utc
+                    ).isoformat(),
                 }
             },
-        },
-        {
-            "$set": {
-                "stall_orders.$.picked_up": True,
-                "stall_orders.$.picked_up_at": datetime.now(
-                    timezone.utc
-                ).isoformat(),
-            }
-        },
-    )
-
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=409,
-            detail="Concurrent update; retry.",
         )
+
+        if result.matched_count == 0:
+            raise HTTPException(
+                status_code=409,
+                detail="Concurrent update; retry.",
+            )
 
     updated_order = orders_collection.find_one(
         {"_id": order["_id"]}
     )
 
-    if updated_order:
-        await safe_emit_order_update(updated_order)
+    if not updated_order:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Pickup was recorded but order state could not be reloaded.",
+        )
+
+    active_stalls = [
+        entry
+        for entry in build_stall_orders(updated_order)
+        if not entry.get("cancelled")
+    ]
+    if active_stalls and all(
+        entry.get("picked_up") for entry in active_stalls
+    ):
+        # Completion is a consequence of every active stall's verified
+        # pickup, never of elapsed time or a customer-controlled update.
+        completion_result = orders_collection.update_one(
+            {
+                "_id": order["_id"],
+                "payment_status": PaymentStatus.PAID,
+                "status": {"$ne": OrderStatus.COMPLETED},
+                "stall_orders": {
+                    "$not": {
+                        "$elemMatch": {
+                            "cancelled": {"$ne": True},
+                            "picked_up": {"$ne": True},
+                        }
+                    }
+                },
+            },
+            {"$set": {"status": OrderStatus.COMPLETED}},
+        )
+        updated_order = orders_collection.find_one(
+            {"_id": order["_id"]}
+        )
+        if not updated_order:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Pickup was recorded but order state could not be reloaded.",
+            )
+        if (
+            getattr(completion_result, "matched_count", 0) != 1
+            and updated_order.get("status") != OrderStatus.COMPLETED
+        ):
+            raise HTTPException(
+                status_code=500,
+                detail="Pickup was confirmed; order completion needs retry.",
+            )
+
+    await safe_emit_order_update(updated_order)
 
     return {
         "success": True,
-        "message": "Pickup confirmed.",
+        "message": "Pickup already confirmed." if duplicate_pickup else "Pickup confirmed.",
         "stall_id": stall_id,
+        **({"duplicate": True} if duplicate_pickup else {}),
     }
 
 class GoogleLoginData(BaseModel):
@@ -5170,7 +5332,7 @@ def get_wallet_balance(current_user: Dict[str, Any] = Depends(get_current_user))
 def create_wallet_topup_order(
     request: Request,
     data: WalletTopupData,
-    current_user: Dict[str, Any] = Depends(get_current_user)
+    current_user: Dict[str, Any] = Depends(require_role(UserRole.USER))
 ):
     try:
         logger.info(
@@ -5259,8 +5421,98 @@ def create_wallet_topup_order(
         )
 
 
+def finalize_wallet_topup(
+    *,
+    intent: Dict[str, Any],
+    payment_id: str,
+    razorpay_order_id: str,
+    current_user: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Record a verified top-up and apply its wallet credit exactly once."""
+    email = normalize_email(str(current_user["email"]))
+    amount = round(float(intent["amount"]), 2)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Invalid top-up amount")
+
+    payment = {
+        "payment_id": payment_id,
+        "order_id": None,
+        "razorpay_order_id": razorpay_order_id,
+        "email": email,
+        "user_email": email,
+        "amount": amount,
+        "currency": "INR",
+        "status": PaymentStatus.PAID,
+        "payment_method": "ONLINE",
+        "purpose": "wallet_topup",
+        "payment_date": datetime.now(timezone.utc),
+        "refund_status": None,
+        "refund_amount": 0.0,
+        "refund_date": None,
+        "refund_payment_id": None,
+    }
+    existing_payment = payments_collection.find_one({"payment_id": payment_id})
+    if existing_payment:
+        if (
+            existing_payment.get("purpose") != "wallet_topup"
+            or existing_payment.get("razorpay_order_id") != razorpay_order_id
+            or normalize_email(str(existing_payment.get("email") or "")) != email
+            or round(float(existing_payment.get("amount", 0)), 2) != amount
+        ):
+            raise HTTPException(status_code=409, detail="Payment ID conflicts with this top-up.")
+    else:
+        try:
+            payments_collection.insert_one(payment)
+        except DuplicateKeyError:
+            existing_payment = payments_collection.find_one({"payment_id": payment_id})
+            if not existing_payment or (
+                existing_payment.get("purpose") != "wallet_topup"
+                or existing_payment.get("razorpay_order_id") != razorpay_order_id
+                or normalize_email(str(existing_payment.get("email") or "")) != email
+                or round(float(existing_payment.get("amount", 0)), 2) != amount
+            ):
+                raise HTTPException(status_code=409, detail="Payment ID conflicts with this top-up.")
+
+    credit_result = users_collection.update_one(
+        {
+            "email": email,
+            "wallet_history.payment_id": {"$ne": payment_id},
+        },
+        {
+            "$inc": {"wallet": amount},
+            "$push": {
+                "wallet_history": {
+                    "type": "credit",
+                    "amount": amount,
+                    "reason": "Wallet top-up via Razorpay",
+                    "payment_id": payment_id,
+                    "date": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        },
+    )
+    if getattr(credit_result, "modified_count", 0) != 1:
+        user = users_collection.find_one({"email": email}) or {}
+        matching_credit = next(
+            (
+                entry for entry in user.get("wallet_history", [])
+                if entry.get("payment_id") == payment_id
+                and entry.get("type") == "credit"
+            ),
+            None,
+        )
+        if not matching_credit or round(float(matching_credit.get("amount", 0)), 2) != amount:
+            raise RuntimeError("Verified top-up is recorded; wallet credit needs retry.")
+
+    return {
+        "success": True,
+        "message": "Wallet Topped Up Successfully 🚀",
+        "amount_added": amount,
+    }
+
+
 @fastapi_app.post("/wallet/verify-topup")
-def verify_wallet_topup(data: VerifyWalletTopupData, current_user: Dict[str, Any] = Depends(get_current_user)):
+def verify_wallet_topup(data: VerifyWalletTopupData, current_user: Dict[str, Any] = Depends(require_role(UserRole.USER))):
     try:
         intent = decode_signed_intent(data.order_intent, "wallet_topup")
 
@@ -5276,20 +5528,23 @@ def verify_wallet_topup(data: VerifyWalletTopupData, current_user: Dict[str, Any
                 detail="This order reference belongs to a different account"
             )
 
-        # Idempotency: a payment_id can only ever be applied once. Checked
-        # here, and enforced again by the unique index + DuplicateKeyError
-        # catch below in case of a concurrent double-submit race.
-        if payments_collection.find_one({"payment_id": data.razorpay_payment_id}):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Payment already processed"
-            )
-
         razorpay_client.utility.verify_payment_signature({
             "razorpay_order_id": data.razorpay_order_id,
             "razorpay_payment_id": data.razorpay_payment_id,
             "razorpay_signature": data.razorpay_signature,
         })
+        verify_razorpay_payment_details(
+            data.razorpay_order_id,
+            data.razorpay_payment_id,
+            float(intent["amount"]),
+        )
+
+        return finalize_wallet_topup(
+            intent=intent,
+            payment_id=data.razorpay_payment_id,
+            razorpay_order_id=data.razorpay_order_id,
+            current_user=current_user,
+        )
 
         amount = intent["amount"]
 
@@ -5361,11 +5616,261 @@ def verify_wallet_topup(data: VerifyWalletTopupData, current_user: Dict[str, Any
             detail="Internal Server Error"
         )
 
+async def finalize_wallet_checkout(
+    *,
+    bill: Dict[str, Any],
+    email: str,
+    name: str,
+    phone: str,
+    idempotency_key: str,
+) -> Dict[str, Any]:
+    """Run a standalone-Mongo-safe, retryable wallet checkout saga.
+
+    The wallet document's conditional debit/history append is the durable
+    idempotency marker. Orders and payment ledger rows are then created with
+    the same key, so a retry after any later write resumes without another
+    debit. No multi-document transaction is assumed.
+    """
+    order_items = bill["items"]
+    total = round(float(bill["total"]), 2)
+    if total <= 0:
+        raise HTTPException(status_code=400, detail="Invalid order amount")
+
+    normalized_email = normalize_email(email)
+    checkout_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "items": order_items,
+                "total": total,
+                # Keep every price component in the retry identity. A policy
+                # change can alter the delivery fee while leaving the final
+                # total unchanged (for example, alongside a discount change).
+                "billing": {
+                    "subtotal": round(float(bill["subtotal"]), 2),
+                    "delivery_fee": round(float(bill["delivery_fee"]), 2),
+                    "tax_amount": round(float(bill["tax_amount"]), 2),
+                    "discount": round(float(bill["discount"]), 2),
+                },
+                "name": name,
+                "phone": phone,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    now = datetime.now(timezone.utc)
+
+    user = users_collection.find_one({"email": normalized_email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    order = orders_collection.find_one(
+        {"email": normalized_email, "idempotency_key": idempotency_key}
+    )
+    if order and order.get("checkout_fingerprint") != checkout_fingerprint:
+        raise HTTPException(
+            status_code=409,
+            detail="Checkout key was already used for a different order.",
+        )
+
+    history = user.get("wallet_history") or []
+    debit = next(
+        (
+            entry for entry in history
+            if entry.get("type") == "debit"
+            and entry.get("idempotency_key") == idempotency_key
+        ),
+        None,
+    )
+    if debit and debit.get("checkout_fingerprint") != checkout_fingerprint:
+        raise HTTPException(
+            status_code=409,
+            detail="Checkout key was already used for a different order.",
+        )
+
+    if not order and not debit:
+        debit_result = users_collection.update_one(
+            {
+                "email": normalized_email,
+                "wallet": {"$gte": total},
+                "wallet_history.idempotency_key": {"$ne": idempotency_key},
+            },
+            {
+                "$inc": {
+                    "wallet": -total,
+                    "total_orders": 1,
+                    "total_spent": total,
+                },
+                "$push": {
+                    "wallet_history": {
+                        "type": "debit",
+                        "amount": total,
+                        "reason": "Food order payment",
+                        "date": now.isoformat(),
+                        "idempotency_key": idempotency_key,
+                        "checkout_fingerprint": checkout_fingerprint,
+                    }
+                },
+            },
+        )
+        if getattr(debit_result, "modified_count", 0) != 1:
+            # A request can lose the acknowledgement after MongoDB commits.
+            # Re-read the durable marker before treating it as insufficient.
+            refreshed_user = users_collection.find_one({"email": normalized_email}) or {}
+            debit = next(
+                (
+                    entry for entry in refreshed_user.get("wallet_history", [])
+                    if entry.get("type") == "debit"
+                    and entry.get("idempotency_key") == idempotency_key
+                ),
+                None,
+            )
+            if not debit:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Insufficient wallet balance",
+                )
+            if debit.get("checkout_fingerprint") != checkout_fingerprint:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Checkout key was already used for a different order.",
+                )
+
+    if not order:
+        order = {
+            "items": order_items,
+            "total": total,
+            "billing": {
+                "subtotal": float(bill["subtotal"]),
+                "delivery_fee": float(bill["delivery_fee"]),
+                "tax_amount": float(bill["tax_amount"]),
+                "discount": float(bill["discount"]),
+                "total": total,
+            },
+            "email": normalized_email,
+            "user_email": normalized_email,
+            "name": name,
+            "phone": phone,
+            "payment_method": "WALLET",
+            "payment_status": PaymentStatus.PENDING,
+            "payment_id": f"WALLET-{idempotency_key}",
+            "payment_date": now.isoformat(),
+            "payment_amount": total,
+            "status": OrderStatus.PREPARING,
+            "created_at": now,
+            "date": now.strftime("%d %b %Y, %I:%M %p"),
+            "estimated_time": "15-20 mins",
+            "pickup_code": random.randint(1000, 9999),
+            "token": get_next_token(),
+            "idempotency_key": idempotency_key,
+            "checkout_fingerprint": checkout_fingerprint,
+        }
+        order["stall_orders"] = build_stall_orders(order)
+        try:
+            inserted = orders_collection.insert_one(order)
+            order["_id"] = inserted.inserted_id
+        except DuplicateKeyError:
+            order = orders_collection.find_one(
+                {"email": normalized_email, "idempotency_key": idempotency_key}
+            )
+            if not order or order.get("checkout_fingerprint") != checkout_fingerprint:
+                raise HTTPException(status_code=409, detail="Checkout is already being processed.")
+
+    # Tie the payment ledger identifier to the unique CampusVita order ID;
+    # idempotency keys are scoped to a customer and need not be globally unique.
+    payment_id = f"WALLET-{order['_id']}"
+    payment = {
+        "payment_id": payment_id,
+        "order_id": str(order["_id"]),
+        "email": normalized_email,
+        "user_email": normalized_email,
+        "amount": total,
+        "currency": "INR",
+        "status": PaymentStatus.PAID,
+        "payment_method": "WALLET",
+        "purpose": "food_order",
+        "payment_date": now,
+        "refund_status": None,
+        "refund_amount": 0.0,
+        "refund_date": None,
+        "refund_payment_id": None,
+    }
+    try:
+        payments_collection.insert_one(payment)
+    except DuplicateKeyError:
+        existing_payment = payments_collection.find_one({"payment_id": payment_id})
+        if not existing_payment or (
+            existing_payment.get("order_id") != str(order["_id"])
+            or existing_payment.get("email") != normalized_email
+            or float(existing_payment.get("amount", 0)) != total
+        ):
+            raise HTTPException(status_code=409, detail="Payment record conflicts with this checkout.")
+
+    paid_update = orders_collection.update_one(
+        {
+            "_id": order["_id"],
+            "email": normalized_email,
+            "idempotency_key": idempotency_key,
+            "checkout_fingerprint": checkout_fingerprint,
+        },
+        {
+            "$set": {
+                "payment_status": PaymentStatus.PAID,
+                "payment_id": payment_id,
+            }
+        },
+    )
+    if getattr(paid_update, "matched_count", 0) != 1:
+        order = orders_collection.find_one({"_id": order["_id"]}) or order
+        if order.get("payment_status") != PaymentStatus.PAID:
+            raise RuntimeError("Wallet payment was recorded but order finalization needs retry.")
+
+    saved_order = orders_collection.find_one({"_id": order["_id"]}) or order
+    saved_order.pop("_id", None)
+    await safe_emit_order_update(saved_order)
+
+    latest_user = users_collection.find_one({"email": normalized_email}) or user
+    return {
+        "success": True,
+        "message": "Order placed using wallet successfully",
+        "order": make_json_safe(saved_order),
+        "payment_id": payment_id,
+        "amount_paid": total,
+        "wallet_balance": float(latest_user.get("wallet", user.get("wallet", 0))),
+    }
+
+
 @fastapi_app.post("/wallet/pay-order")
 async def pay_order_with_wallet(
     data: CreateFoodOrderData,
-    current_user: Dict[str, Any] = Depends(get_current_user)
+    current_user: Dict[str, Any] = Depends(require_role(UserRole.USER))
 ):
+    # Keep the response contract stable while requiring a stable retry key
+    # for the resumable wallet saga below.
+    try:
+        if not data.idempotency_key:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="An idempotency key is required for wallet checkout.",
+            )
+        bill = calculate_food_order_bill(data.items)
+        return await finalize_wallet_checkout(
+            bill=bill,
+            email=current_user["email"],
+            name=data.name,
+            phone=data.phone,
+            idempotency_key=data.idempotency_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Wallet checkout finalization failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Wallet checkout is pending recovery. Retry with the same checkout key.",
+        )
+
     try:
         # ============================================================
         # 1. CALCULATE REAL FOOD PRICES FROM DATABASE
@@ -5696,16 +6201,6 @@ async def pay_order_with_wallet(
                 f"Order update emit failed: {e}"
             )
 
-        # ============================================================
-        # 10. START ORDER FLOW
-        # ============================================================
-
-        threading.Thread(
-            target=update_order_flow,
-            args=(result.inserted_id,),
-            daemon=True
-        ).start()
-
         logger.info(
             f"✅ Wallet order created for "
             f"{current_user['email']}: ₹{total}"
@@ -5807,11 +6302,8 @@ def process_refund_record(refund_id: ObjectId) -> Dict[str, Any]:
     if refund.get("status") == RefundStatus.PROCESSED:
         return refund
 
-    if refund.get("status") not in {
-        RefundStatus.PENDING,
-        RefundStatus.FAILED,
-    }:
-        return refund
+    claim_time = datetime.now(timezone.utc)
+    lease_expired_before = claim_time - timedelta(minutes=10)
 
     order_id = str(refund.get("order_id") or "").strip()
     amount_paise = int(refund.get("amount_paise") or 0)
@@ -5835,22 +6327,25 @@ def process_refund_record(refund_id: ObjectId) -> Dict[str, Any]:
             detail="Refund data is invalid.",
         )
 
-    claim_time = datetime.now(timezone.utc)
-
     claimed = refunds_collection.find_one_and_update(
         {
             "_id": refund_id,
-            "status": {
-                "$in": [
-                    RefundStatus.PENDING,
-                    RefundStatus.FAILED,
-                ]
-            },
+            "$or": [
+                {"status": {"$in": [RefundStatus.PENDING, RefundStatus.FAILED]}},
+                {
+                    "status": {"$in": [RefundStatus.INITIATED, RefundStatus.PROCESSING]},
+                    "$or": [
+                        {"updated_at": {"$lt": lease_expired_before}},
+                        {"updated_at": {"$exists": False}},
+                    ],
+                },
+            ],
         },
         {
             "$set": {
                 "status": RefundStatus.INITIATED,
                 "updated_at": claim_time,
+                "processing_started_at": claim_time,
             }
         },
     )
@@ -5870,7 +6365,7 @@ def process_refund_record(refund_id: ObjectId) -> Dict[str, Any]:
         )
 
     try:
-        refunds_collection.update_one(
+        processing_update = refunds_collection.update_one(
             {
                 "_id": refund_id,
                 "status": RefundStatus.INITIATED,
@@ -5882,6 +6377,10 @@ def process_refund_record(refund_id: ObjectId) -> Dict[str, Any]:
                 }
             },
         )
+        if getattr(processing_update, "matched_count", 0) != 1:
+            raise RuntimeError(
+                "Refund processing claim changed before provider execution."
+            )
 
         if payment_method == "ONLINE":
             payment_id = str(
@@ -5917,7 +6416,7 @@ def process_refund_record(refund_id: ObjectId) -> Dict[str, Any]:
                     "Razorpay did not return a refund ID."
                 )
 
-            refunds_collection.update_one(
+            provider_result_update = refunds_collection.update_one(
                 {
                     "_id": refund_id,
                     "status": RefundStatus.PROCESSING,
@@ -5930,6 +6429,10 @@ def process_refund_record(refund_id: ObjectId) -> Dict[str, Any]:
                     }
                 },
             )
+            if getattr(provider_result_update, "matched_count", 0) != 1:
+                raise RuntimeError(
+                    "Provider accepted the refund; its response needs reconciliation."
+                )
 
             # Razorpay's refund API response confirms that the refund
             # request was accepted. Final PROCESSED state is set by the
@@ -5996,7 +6499,7 @@ def process_refund_record(refund_id: ObjectId) -> Dict[str, Any]:
                         "Customer wallet account was not found."
                     )
 
-            refunds_collection.update_one(
+            wallet_refund_update = refunds_collection.update_one(
                 {
                     "_id": refund_id,
                     "status": RefundStatus.PROCESSING,
@@ -6009,6 +6512,12 @@ def process_refund_record(refund_id: ObjectId) -> Dict[str, Any]:
                     }
                 },
             )
+            if getattr(wallet_refund_update, "matched_count", 0) != 1:
+                latest_refund = refunds_collection.find_one({"_id": refund_id}) or {}
+                if latest_refund.get("status") != RefundStatus.PROCESSED:
+                    raise RuntimeError(
+                        "Wallet refund credit was applied; refund status needs retry."
+                    )
 
         else:
             raise RuntimeError(
@@ -6997,13 +7506,36 @@ def calculate_food_order_bill(
 @fastapi_app.post("/place-order")
 async def place_order(
     order: OrderData,
-    current_user: Dict[str, Any] = Depends(get_current_user)
+    current_user: Dict[str, Any] = Depends(require_role(UserRole.USER))
 ):
     """Pay with Wallet order path.
 
     Prices are taken from the database and the wallet balance is
     checked/debited atomically.
     """
+    try:
+        if not order.idempotency_key:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="An idempotency key is required for wallet checkout.",
+            )
+        bill = calculate_food_order_bill(order.items)
+        return await finalize_wallet_checkout(
+            bill=bill,
+            email=current_user["email"],
+            name=str(current_user.get("name") or "CampusVita Customer"),
+            phone=str(current_user.get("phone") or ""),
+            idempotency_key=order.idempotency_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Legacy wallet checkout finalization failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Wallet checkout is pending recovery. Retry with the same checkout key.",
+        )
+
     try:
         # ============================================================
         # 1. GET AUTHORITATIVE FOOD DATA + TOTAL
@@ -7034,6 +7566,8 @@ async def place_order(
                 },
             },
         )
+        if getattr(processing_update, "matched_count", 0) != 1:
+            raise RuntimeError("Refund claim was lost before processing started.")
 
         if updated_user is None:
             raise HTTPException(
@@ -7146,15 +7680,6 @@ async def place_order(
         # ============================================================
         await safe_emit_order_update(saved_order)
 
-        # ============================================================
-        # 8. START ORDER STATUS FLOW
-        # ============================================================
-        threading.Thread(
-            target=update_order_flow,
-            args=(result.inserted_id,),
-            daemon=True
-        ).start()
-
         logger.info(
             "✅ New wallet order placed: #%s by %s",
             saved_order["token"],
@@ -7198,10 +7723,30 @@ async def update_order_status(
                 detail="Order not found"
             )
 
-        orders_collection.update_one(
-            {"_id": order["_id"]},
+        derived_status = aggregate_order_status(order)
+        if data.status != derived_status:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Order status must reflect vendor fulfillment and verified pickups.",
+            )
+        if (
+            data.status == OrderStatus.COMPLETED
+            and order.get("payment_status") != PaymentStatus.PAID
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An unpaid order cannot be completed.",
+            )
+
+        update_result = orders_collection.update_one(
+            {"_id": order["_id"], "status": order.get("status")},
             {"$set": {"status": data.status}}
         )
+        if getattr(update_result, "matched_count", 0) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Concurrent order update detected; retry.",
+            )
 
         updated_order = orders_collection.find_one({"_id": order["_id"]})
         updated_order["order_id"] = str(updated_order["_id"])
@@ -7260,95 +7805,9 @@ def delete_order(order_id: str, current_user: Dict[str, Any] = Depends(get_curre
         )
 
 
-# =====================================
-# ORDER STATUS FLOW (Background Thread)
-# =====================================
-
-def update_order_flow(order_id):
-    flow_statuses = [
-        OrderStatus.COOKING,
-        OrderStatus.READY_FOR_PICKUP,
-        OrderStatus.COMPLETED,
-    ]
-
-    for next_status in flow_statuses:
-        time.sleep(10)
-
-        orders_collection.update_one(
-            {"_id": order_id},
-            {
-                "$set": {
-                    "status": next_status,
-                }
-            },
-        )
-
-        updated_order = orders_collection.find_one(
-            {"_id": order_id},
-            {"_id": 0},
-        )
-
-        if not updated_order:
-            logger.warning(
-                f"⚠️ Order no longer exists: {order_id}"
-            )
-            continue
-
-        # Realtime update, if supported.
-        emit_order_update_sync(
-            updated_order
-        )
-
-        # --------------------------------------------------
-        # SEND PUSH NOTIFICATION
-        # --------------------------------------------------
-
-        user_email = (
-            updated_order.get("email")
-            or updated_order.get("user_email")
-        )
-
-        if not user_email:
-            logger.warning(
-                f"⚠️ No customer email for order "
-                f"{order_id}"
-            )
-            continue
-
-        normalized_email = normalize_email(
-            str(user_email)
-        )
-
-        order_user = users_collection.find_one(
-            {
-                "email": normalized_email
-            }
-        )
-
-        if not order_user:
-            logger.warning(
-                f"⚠️ User not found for order "
-                f"{order_id}: {normalized_email}"
-            )
-            continue
-
-        fcm_token = str(
-            order_user.get("fcm_token")
-            or ""
-        ).strip()
-
-        if not fcm_token:
-            logger.warning(
-                f"⚠️ No FCM token for "
-                f"{normalized_email}"
-            )
-            continue
-
-        send_push_notification(
-            fcm_token,
-            "CampusVita Order Update",
-            f"Your order status is now: {next_status}",
-        )
+# Order fulfillment is driven exclusively by vendor status transitions and
+# verified pickup confirmation. In particular, no elapsed-time worker may
+# advance an order or mark it completed.
 # =====================================
 # RATING ROUTES
 # =====================================
@@ -9292,7 +9751,7 @@ def get_cart_summary(
 def create_payment_order(
     request: Request,
     data: CreateFoodOrderData,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_role(UserRole.USER)),
 ):
     try:
         # ========================================================
@@ -9499,10 +9958,238 @@ def create_payment_order(
         )
 
 
+async def finalize_verified_online_payment(
+    *,
+    intent: Dict[str, Any],
+    payment_id: str,
+    razorpay_order_id: str,
+    razorpay_signature: str,
+    current_user: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Idempotently persist a provider-verified payment and its order.
+
+    The order is first written as Pending, the payment ledger is persisted,
+    and only then is the order made visible as Paid. Retries resume via the
+    unique Razorpay order/payment indexes; no Mongo transaction is assumed.
+    """
+    email = normalize_email(str(current_user["email"]))
+    total = round(float(intent["total"]), 2)
+
+    existing_payment = payments_collection.find_one(
+        {"razorpay_order_id": razorpay_order_id}
+    )
+    if existing_payment and (
+        existing_payment.get("purpose") != "food_order"
+        or
+        existing_payment.get("payment_id") != payment_id
+        or normalize_email(str(existing_payment.get("email") or "")) != email
+        or round(float(existing_payment.get("amount", 0)), 2) != total
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="This provider order is already associated with another payment.",
+        )
+
+    order = orders_collection.find_one(
+        {"razorpay_order_id": razorpay_order_id}
+    )
+    if order:
+        if normalize_email(str(order.get("email") or order.get("user_email") or "")) != email:
+            raise HTTPException(status_code=403, detail="Payment order belongs to another account.")
+        if round(float(order.get("total", 0)), 2) != total:
+            raise HTTPException(status_code=409, detail="Payment amount does not match the saved order.")
+        if order.get("payment_id") not in (None, payment_id):
+            # A Razorpay order can have multiple payment attempts. Resume only
+            # the payment attempt already bound to this pending CampusVita
+            # order; otherwise a second captured attempt could be recorded as
+            # the same order's successful payment.
+            raise HTTPException(
+                status_code=409,
+                detail="This CampusVita order is already bound to another payment attempt.",
+            )
+    else:
+        now = datetime.now(timezone.utc)
+        order = {
+            "items": intent["items"],
+            "total": total,
+            "billing": intent.get(
+                "billing",
+                {
+                    "subtotal": total,
+                    "delivery_fee": 0.0,
+                    "tax_amount": 0.0,
+                    "discount": 0.0,
+                    "total": total,
+                },
+            ),
+            "email": email,
+            "user_email": email,
+            "name": intent["name"],
+            "phone": intent["phone"],
+            "payment_method": "ONLINE",
+            "payment_status": PaymentStatus.PENDING,
+            "payment_id": payment_id,
+            "razorpay_order_id": razorpay_order_id,
+            "razorpay_signature": razorpay_signature,
+            "payment_date": now.isoformat(),
+            "payment_amount": total,
+            "status": OrderStatus.PREPARING,
+            "created_at": now,
+            "date": now.strftime("%d %b %Y, %I:%M %p"),
+            "estimated_time": "15-20 mins",
+            "pickup_code": random.randint(1000, 9999),
+            "token": get_next_token(),
+        }
+        order["stall_orders"] = build_stall_orders(order)
+        try:
+            inserted = orders_collection.insert_one(order)
+            order["_id"] = inserted.inserted_id
+        except DuplicateKeyError:
+            order = orders_collection.find_one(
+                {"razorpay_order_id": razorpay_order_id}
+            )
+            if not order:
+                raise HTTPException(status_code=409, detail="Payment order is being finalized; retry.")
+            if normalize_email(str(order.get("email") or order.get("user_email") or "")) != email:
+                raise HTTPException(status_code=403, detail="Payment order belongs to another account.")
+
+    if existing_payment and existing_payment.get("order_id") not in (None, str(order["_id"])):
+        raise HTTPException(status_code=409, detail="Payment is already linked to another CampusVita order.")
+
+    payment = {
+        "payment_id": payment_id,
+        "order_id": str(order["_id"]),
+        "razorpay_order_id": razorpay_order_id,
+        "email": email,
+        "user_email": email,
+        "amount": total,
+        "currency": "INR",
+        "status": PaymentStatus.PAID,
+        "payment_method": "ONLINE",
+        "purpose": "food_order",
+        "payment_date": datetime.now(timezone.utc),
+        "refund_status": None,
+        "refund_amount": 0.0,
+        "refund_date": None,
+        "refund_payment_id": None,
+        "razorpay_signature": razorpay_signature,
+        "finalization_version": 2,
+        "stats_applied": False,
+    }
+    if not existing_payment:
+        try:
+            payments_collection.insert_one(payment)
+        except DuplicateKeyError:
+            existing_payment = payments_collection.find_one(
+                {"payment_id": payment_id}
+            )
+            if not existing_payment or (
+                existing_payment.get("razorpay_order_id") != razorpay_order_id
+                or existing_payment.get("order_id") != str(order["_id"])
+                or normalize_email(str(existing_payment.get("email") or "")) != email
+                or round(float(existing_payment.get("amount", 0)), 2) != total
+            ):
+                raise HTTPException(status_code=409, detail="Payment record conflicts with this order.")
+
+    paid_update = orders_collection.update_one(
+        {
+            "_id": order["_id"],
+            "razorpay_order_id": razorpay_order_id,
+            "email": email,
+        },
+        {
+            "$set": {
+                "payment_status": PaymentStatus.PAID,
+                "payment_id": payment_id,
+                "razorpay_signature": razorpay_signature,
+            }
+        },
+    )
+    if getattr(paid_update, "matched_count", 0) != 1:
+        order = orders_collection.find_one({"_id": order["_id"]}) or order
+        if order.get("payment_status") != PaymentStatus.PAID:
+            raise RuntimeError("Verified payment is recorded; order finalization needs retry.")
+
+    # The profile counters are denormalized. This conditional update makes
+    # replayed callbacks safe and lets a retry repair a crash after payment
+    # persistence but before the statistics update.
+    is_new_finalization = (
+        not existing_payment
+        or existing_payment.get("finalization_version") == 2
+    )
+    if is_new_finalization:
+        stats_update = users_collection.update_one(
+            {
+                "email": email,
+                "processed_payment_ids": {"$ne": payment_id},
+            },
+            {
+                "$inc": {"total_orders": 1, "total_spent": total},
+                "$addToSet": {"processed_payment_ids": payment_id},
+            },
+        )
+        if getattr(stats_update, "matched_count", 0) == 0:
+            user = users_collection.find_one({"email": email}) or {}
+            if payment_id not in user.get("processed_payment_ids", []):
+                raise RuntimeError("Verified payment is recorded; user statistics need retry.")
+
+        stats_mark = payments_collection.update_one(
+            {"payment_id": payment_id},
+            {"$set": {"stats_applied": True}},
+        )
+        if getattr(stats_mark, "matched_count", 0) != 1:
+            latest_payment = payments_collection.find_one({"payment_id": payment_id}) or {}
+            if latest_payment.get("stats_applied") is not True:
+                raise RuntimeError("User statistics were updated; payment audit marker needs retry.")
+    else:
+        # Legacy payment rows predate the idempotent stats marker. Avoid
+        # incrementing totals again on a delayed callback replay; reconcile
+        # any historical missed counters from the payment ledger separately.
+        logger.warning(
+            "Legacy verified-payment replay requires stats reconciliation: %s",
+            payment_id,
+        )
+
+    saved_order = orders_collection.find_one({"_id": order["_id"]}) or order
+    saved_order.pop("_id", None)
+    await safe_emit_order_update(saved_order)
+    return {
+        "success": True,
+        "message": "Payment Verified Successfully",
+        "payment_id": payment_id,
+        "order": make_json_safe(saved_order),
+    }
+
+
+def verify_razorpay_payment_details(
+    razorpay_order_id: str,
+    payment_id: str,
+    expected_amount: float,
+) -> None:
+    """Confirm provider capture, order binding, currency, and exact INR amount."""
+    details = razorpay_client.payment.fetch(payment_id)
+    expected_paise = int(
+        (Decimal(str(expected_amount)) * Decimal("100")).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+    )
+    if (
+        not isinstance(details, dict)
+        or details.get("order_id") != razorpay_order_id
+        or int(details.get("amount", -1)) != expected_paise
+        or str(details.get("currency", "")).upper() != "INR"
+        or details.get("status") != "captured"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Provider payment is not captured for the expected order amount.",
+        )
+
+
 @fastapi_app.post("/verify-payment")
 async def verify_payment(
     data: VerifyPaymentData,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_role(UserRole.USER)),
 ):
     try:
         # ========================================================
@@ -9541,22 +10228,7 @@ async def verify_payment(
             )
 
         # ========================================================
-        # 4. PREVENT DUPLICATE PAYMENT
-        # ========================================================
-
-        if payments_collection.find_one(
-            {
-                "payment_id":
-                data.razorpay_payment_id
-            }
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Payment already processed",
-            )
-
-        # ========================================================
-        # 5. VERIFY RAZORPAY SIGNATURE
+        # 4. VERIFY RAZORPAY SIGNATURE BEFORE IDEMPOTENT SUCCESS
         # ========================================================
 
         razorpay_client.utility.verify_payment_signature(
@@ -9570,6 +10242,22 @@ async def verify_payment(
                 "razorpay_signature":
                     data.razorpay_signature,
             }
+        )
+        verify_razorpay_payment_details(
+            data.razorpay_order_id,
+            data.razorpay_payment_id,
+            float(intent["total"]),
+        )
+
+        # The verified provider signature is the trust boundary. The durable
+        # order/payment saga below uses the Razorpay order ID as its
+        # idempotency key and can resume after an interrupted MongoDB write.
+        return await finalize_verified_online_payment(
+            intent=intent,
+            payment_id=data.razorpay_payment_id,
+            razorpay_order_id=data.razorpay_order_id,
+            razorpay_signature=data.razorpay_signature,
+            current_user=current_user,
         )
 
         # ========================================================
@@ -9776,16 +10464,6 @@ async def verify_payment(
         await safe_emit_order_update(
             saved_order
         )
-
-        # ========================================================
-        # 12. START ORDER FLOW
-        # ========================================================
-
-        threading.Thread(
-            target=update_order_flow,
-            args=(result.inserted_id,),
-            daemon=True,
-        ).start()
 
         logger.info(
             "✅ Payment verified: "
